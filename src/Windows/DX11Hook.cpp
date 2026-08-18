@@ -492,12 +492,31 @@ ULONG STDMETHODCALLTYPE DX11Hook_t::_MyID3D11DeviceRelease(ID3D11Device* _this)
     return result;
 }
 
+// The hook members (e.g. _IDXGISwapChainPresent) are declared as member
+// function pointers, but are actually filled with plain function addresses
+// read from the swapchain vtable (see GetDXGIFunctions). Invoke them as
+// plain functions: member-pointer call semantics would misinterpret the
+// low bit of the address as a vtable index and crash (seen on Wine/Proton).
+template<typename Fn>
+static Fn ReadAsFunctionPointer(void const* memberPtr)
+{
+    static_assert(sizeof(Fn) == sizeof(void*), "expected a plain function pointer");
+    Fn fn;
+    std::memcpy(&fn, memberPtr, sizeof(fn));
+    return fn;
+}
+
+using IDXGISwapChainPresentFn    = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
+using IDXGISwapChainResizeBufferFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+using IDXGISwapChainResizeTargetFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, const DXGI_MODE_DESC*);
+using IDXGISwapChain1Present1Fn   = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
+
 HRESULT STDMETHODCALLTYPE DX11Hook_t::_MyIDXGISwapChainPresent(IDXGISwapChain *_this, UINT SyncInterval, UINT Flags)
 {
     INGAMEOVERLAY_INFO("IDXGISwapChain::Present");
     auto inst = DX11Hook_t::Inst();
     inst->_PrepareForOverlay(_this, Flags);
-    return (_this->*inst->_IDXGISwapChainPresent)(SyncInterval, Flags);
+    return ReadAsFunctionPointer<IDXGISwapChainPresentFn>(&inst->_IDXGISwapChainPresent)(_this, SyncInterval, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE DX11Hook_t::_MyIDXGISwapChainResizeBuffers(IDXGISwapChain* _this, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
@@ -511,7 +530,7 @@ HRESULT STDMETHODCALLTYPE DX11Hook_t::_MyIDXGISwapChainResizeBuffers(IDXGISwapCh
         createRenderTargets = true;
         inst->_ResetRenderState(OverlayHookState::Reset);
     }
-    auto r = (_this->*inst->_IDXGISwapChainResizeBuffers)(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    auto r = ReadAsFunctionPointer<IDXGISwapChainResizeBufferFn>(&inst->_IDXGISwapChainResizeBuffers)(_this, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     if (createRenderTargets)
     {
         inst->_ResetRenderState(inst->_CreateRenderTargets(_this)
@@ -533,7 +552,7 @@ HRESULT STDMETHODCALLTYPE DX11Hook_t::_MyIDXGISwapChainResizeTarget(IDXGISwapCha
         createRenderTargets = true;
         inst->_ResetRenderState(OverlayHookState::Reset);
     }
-    auto r = (_this->*inst->_IDXGISwapChainResizeTarget)(pNewTargetParameters);
+    auto r = ReadAsFunctionPointer<IDXGISwapChainResizeTargetFn>(&inst->_IDXGISwapChainResizeTarget)(_this, pNewTargetParameters);
     if (createRenderTargets)
     {
         inst->_ResetRenderState(inst->_CreateRenderTargets(_this)
@@ -549,7 +568,7 @@ HRESULT STDMETHODCALLTYPE DX11Hook_t::_MyIDXGISwapChain1Present1(IDXGISwapChain1
     INGAMEOVERLAY_INFO("IDXGISwapChain1::Present1");
     auto inst = DX11Hook_t::Inst();
     inst->_PrepareForOverlay(_this, Flags);
-    return (_this->*inst->_IDXGISwapChain1Present1)(SyncInterval, Flags, pPresentParameters);
+    return ReadAsFunctionPointer<IDXGISwapChain1Present1Fn>(&inst->_IDXGISwapChain1Present1)(_this, SyncInterval, Flags, pPresentParameters);
 }
 
 DX11Hook_t::DX11Hook_t():

@@ -1109,6 +1109,17 @@ private:
         }
     }
 
+    // Same as DX11Hook_t: the member-pointer fields are filled with plain
+    // function addresses from the swapchain vtable; call them directly.
+    template<typename Fn>
+    static Fn ReadAsFunctionPointer(void const* memberPtr)
+    {
+        static_assert(sizeof(Fn) == sizeof(void*), "expected a plain function pointer");
+        Fn fn;
+        std::memcpy(&fn, memberPtr, sizeof(fn));
+        return fn;
+    }
+
     static HRESULT STDMETHODCALLTYPE _MyIDXGISwapChainPresent(IDXGISwapChain* _this, UINT SyncInterval, UINT Flags)
     {
         auto inst = Inst();
@@ -1118,7 +1129,7 @@ private:
         std::lock_guard<std::recursive_mutex> lk(inst->_RendererMutex);
 
         INGAMEOVERLAY_INFO("IDXGISwapChain::Present");
-        res = (_this->*inst->_IDXGISwapChainPresent)(SyncInterval, Flags);
+        res = ReadAsFunctionPointer<HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT)>(&inst->_IDXGISwapChainPresent)(_this, SyncInterval, Flags);
         if (!inst->_DetectionStarted || inst->_DetectionDone)
             return res;
 
@@ -1136,7 +1147,7 @@ private:
         std::lock_guard<std::recursive_mutex> lk(inst->_RendererMutex);
 
         INGAMEOVERLAY_INFO("IDXGISwapChain::Present1");
-        res = (_this->*inst->_IDXGISwapChain1Present1)(SyncInterval, Flags, pPresentParameters);
+        res = ReadAsFunctionPointer<HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*)>(&inst->_IDXGISwapChain1Present1)(_this, SyncInterval, Flags, pPresentParameters);
         if (!inst->_DetectionStarted || inst->_DetectionDone)
             return res;
 
