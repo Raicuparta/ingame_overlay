@@ -234,31 +234,33 @@ bool WindowsHook_t::PrepareForOverlay(HWND hWnd)
     return false;
 }
 
+struct FindApplicationHWNDParams_t
+{
+    DWORD pid;
+    std::vector<HWND> windows;
+};
+
+static BOOL CALLBACK FindApplicationHWNDEnumProc(HWND hwnd, LPARAM lParam)
+{
+    if (!IsWindowVisible(hwnd) && !IsIconic(hwnd))
+        return TRUE;
+
+    DWORD processId;
+    GetWindowThreadProcessId(hwnd, &processId);
+
+    auto params = reinterpret_cast<FindApplicationHWNDParams_t*>(lParam);
+
+    if (processId == params->pid)
+        params->windows.emplace_back(hwnd);
+
+    return TRUE;
+}
+
 std::vector<HWND> WindowsHook_t::FindApplicationHWND(DWORD processId)
 {
-    struct
-    {
-        DWORD pid;
-        std::vector<HWND> windows;
-    } windowParams{
-        processId
-    };
+    FindApplicationHWNDParams_t windowParams{ processId };
 
-    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL
-    {
-        if (!IsWindowVisible(hwnd) && !IsIconic(hwnd))
-            return TRUE;
-
-        DWORD processId;
-        GetWindowThreadProcessId(hwnd, &processId);
-
-        auto params = reinterpret_cast<decltype(windowParams)*>(lParam);
-
-        if (processId == params->pid)
-            params->windows.emplace_back(hwnd);
-
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&windowParams));
+    EnumWindows(&FindApplicationHWNDEnumProc, reinterpret_cast<LPARAM>(&windowParams));
 
     return windowParams.windows;
 }

@@ -1,6 +1,34 @@
 # InGameOverlay
 
+> Fork of [Nemirtingas/ingame_overlay](https://github.com/Nemirtingas/ingame_overlay)
+> used by the [Everyone](https://github.com/Raicuparta/everyone) client. It adds a
+> small `everyone_overlay` bridge library that renders a simple ImGui label and
+> is loaded by the BepInEx mod at runtime.
+
 InGameOverlay is a cross-platform library for attaching custom overlays to third-party applications by hooking into their rendering pipeline. Rather than relying on access to the game or application source code, it is designed for injecting UI into processes where the renderer is already in place and the overlay needs to appear alongside the existing frame output.
+
+## Everyone overlay bridge
+
+The `everyone_overlay` shared library (built from `bridge/everyone_overlay.cpp`)
+wraps InGameOverlay and exposes a tiny C API:
+
+```c
+int  everyone_overlay_start(void);
+int  everyone_overlay_stop(void);
+int  everyone_overlay_is_ready(void);
+void everyone_overlay_set_text(const char* text);
+```
+
+Build it (and the vendored InGameOverlay sources) with:
+
+```bash
+./build.sh all        # linux-x86_64, win-x64, win-x86
+# or: ./build.sh linux | ./build.sh windows
+```
+
+Windows cross-builds require the [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
+toolchain at `~/.local/llvm-mingw` (override with `LLVM_MINGW_ROOT`). Outputs land in
+`dist/`.
 
 ## Highlights
 

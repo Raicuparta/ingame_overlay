@@ -1,0 +1,792 @@
+/*
+ * Copyright (C) Nemirtingas
+ * This file is part of System.
+ *
+ * System is free software; you can redistribute it
+ * and/or modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
+ *
+ * System is distributed in the hope that it will be
+ * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with System; if not, see
+ * <http://www.gnu.org/licenses/>.
+ */
+
+#include <System/System.h>
+#include <System/Filesystem.h>
+#include <System/Encoding.hpp>
+#include "System_internals.h"
+
+#if defined(SYSTEM_OS_WINDOWS)
+#define WIN32_LEAN_AND_MEAN
+#define VC_EXTRALEAN
+#define NOMINMAX
+#include <Windows.h>
+#include <TlHelp32.h>
+#include <shellapi.h>
+#include <shlobj.h> // (shell32.lib) Infos about current user folders
+
+inline bool handle_is_valid(HANDLE h)
+{
+    return (h != (HANDLE)0 && h != (HANDLE)-1);
+}
+
+typedef enum _PROCESSINFOCLASS
+{
+    ProcessBasicInformation,                     // q: PROCESS_BASIC_INFORMATION, PROCESS_EXTENDED_BASIC_INFORMATION
+    ProcessQuotaLimits,                          // qs: QUOTA_LIMITS, QUOTA_LIMITS_EX
+    ProcessIoCounters,                           // q: IO_COUNTERS
+    ProcessVmCounters,                           // q: VM_COUNTERS, VM_COUNTERS_EX, VM_COUNTERS_EX2
+    ProcessTimes,                                // q: KERNEL_USER_TIMES
+    ProcessBasePriority,                         // s: KPRIORITY
+    ProcessRaisePriority,                        // s: ULONG
+    ProcessDebugPort,                            // q: HANDLE
+    ProcessExceptionPort,                        // s: PROCESS_EXCEPTION_PORT (requires SeTcbPrivilege)
+    ProcessAccessToken,                          // s: PROCESS_ACCESS_TOKEN
+    ProcessLdtInformation,                       // qs: PROCESS_LDT_INFORMATION // 10
+    ProcessLdtSize,                              // s: PROCESS_LDT_SIZE
+    ProcessDefaultHardErrorMode,                 // qs: ULONG
+    ProcessIoPortHandlers,                       // s: PROCESS_IO_PORT_HANDLER_INFORMATION // (kernel-mode only)
+    ProcessPooledUsageAndLimits,                 // q: POOLED_USAGE_AND_LIMITS
+    ProcessWorkingSetWatch,                      // q: PROCESS_WS_WATCH_INFORMATION[]; s: void
+    ProcessUserModeIOPL,                         // qs: ULONG (requires SeTcbPrivilege)
+    ProcessEnableAlignmentFaultFixup,            // s: BOOLEAN
+    ProcessPriorityClass,                        // qs: PROCESS_PRIORITY_CLASS
+    ProcessWx86Information,                      // qs: ULONG (requires SeTcbPrivilege) (VdmAllowed)
+    ProcessHandleCount,                          // q: ULONG, PROCESS_HANDLE_INFORMATION // 20
+    ProcessAffinityMask,                         // qs: KAFFINITY, qs: GROUP_AFFINITY
+    ProcessPriorityBoost,                        // qs: ULONG
+    ProcessDeviceMap,                            // qs: PROCESS_DEVICEMAP_INFORMATION, PROCESS_DEVICEMAP_INFORMATION_EX
+    ProcessSessionInformation,                   // q: PROCESS_SESSION_INFORMATION
+    ProcessForegroundInformation,                // s: PROCESS_FOREGROUND_BACKGROUND
+    ProcessWow64Information,                     // q: ULONG_PTR
+    ProcessImageFileName,                        // q: UNICODE_STRING
+    ProcessLUIDDeviceMapsEnabled,                // q: ULONG
+    ProcessBreakOnTermination,                   // qs: ULONG
+    ProcessDebugObjectHandle,                    // q: HANDLE // 30
+    ProcessDebugFlags,                           // qs: ULONG
+    ProcessHandleTracing,                        // q: PROCESS_HANDLE_TRACING_QUERY; s: PROCESS_HANDLE_TRACING_ENABLE[_EX] or void to disable
+    ProcessIoPriority,                           // qs: IO_PRIORITY_HINT
+    ProcessExecuteFlags,                         // qs: ULONG (MEM_EXECUTE_OPTION_*)
+    ProcessTlsInformation,                       // qs: PROCESS_TLS_INFORMATION // ProcessResourceManagement
+    ProcessCookie,                               // q: ULONG
+    ProcessImageInformation,                     // q: SECTION_IMAGE_INFORMATION
+    ProcessCycleTime,                            // q: PROCESS_CYCLE_TIME_INFORMATION // since VISTA
+    ProcessPagePriority,                         // qs: PAGE_PRIORITY_INFORMATION
+    ProcessInstrumentationCallback,              // s: PVOID or PROCESS_INSTRUMENTATION_CALLBACK_INFORMATION // 40
+    ProcessThreadStackAllocation,                // s: PROCESS_STACK_ALLOCATION_INFORMATION, PROCESS_STACK_ALLOCATION_INFORMATION_EX
+    ProcessWorkingSetWatchEx,                    // q: PROCESS_WS_WATCH_INFORMATION_EX[]; s: void
+    ProcessImageFileNameWin32,                   // q: UNICODE_STRING
+    ProcessImageFileMapping,                     // q: HANDLE (input)
+    ProcessAffinityUpdateMode,                   // qs: PROCESS_AFFINITY_UPDATE_MODE
+    ProcessMemoryAllocationMode,                 // qs: PROCESS_MEMORY_ALLOCATION_MODE
+    ProcessGroupInformation,                     // q: USHORT[]
+    ProcessTokenVirtualizationEnabled,           // s: ULONG
+    ProcessConsoleHostProcess,                   // qs: ULONG_PTR // ProcessOwnerInformation
+    ProcessWindowInformation,                    // q: PROCESS_WINDOW_INFORMATION // 50
+    ProcessHandleInformation,                    // q: PROCESS_HANDLE_SNAPSHOT_INFORMATION // since WIN8
+    ProcessMitigationPolicy,                     // s: PROCESS_MITIGATION_POLICY_INFORMATION
+    ProcessDynamicFunctionTableInformation,      // s: PROCESS_DYNAMIC_FUNCTION_TABLE_INFORMATION
+    ProcessHandleCheckingMode,                   // qs: ULONG; s: 0 disables, otherwise enables
+    ProcessKeepAliveCount,                       // q: PROCESS_KEEPALIVE_COUNT_INFORMATION
+    ProcessRevokeFileHandles,                    // s: PROCESS_REVOKE_FILE_HANDLES_INFORMATION
+    ProcessWorkingSetControl,                    // s: PROCESS_WORKING_SET_CONTROL
+    ProcessHandleTable,                          // q: ULONG[] // since WINBLUE
+    ProcessCheckStackExtentsMode,                // qs: ULONG // KPROCESS->CheckStackExtents (CFG)
+    ProcessCommandLineInformation,               // q: UNICODE_STRING // 60
+    ProcessProtectionInformation,                // q: PS_PROTECTION
+    ProcessMemoryExhaustion,                     // s: PROCESS_MEMORY_EXHAUSTION_INFO // since THRESHOLD
+    ProcessFaultInformation,                     // s: PROCESS_FAULT_INFORMATION
+    ProcessTelemetryIdInformation,               // q: PROCESS_TELEMETRY_ID_INFORMATION
+    ProcessCommitReleaseInformation,             // qs: PROCESS_COMMIT_RELEASE_INFORMATION
+    ProcessDefaultCpuSetsInformation,            // qs: SYSTEM_CPU_SET_INFORMATION[5] // ProcessReserved1Information
+    ProcessAllowedCpuSetsInformation,            // qs: SYSTEM_CPU_SET_INFORMATION[5] // ProcessReserved2Information
+    ProcessSubsystemProcess,                     // s: void // EPROCESS->SubsystemProcess
+    ProcessJobMemoryInformation,                 // q: PROCESS_JOB_MEMORY_INFO
+    ProcessInPrivate,                            // q: BOOLEAN; s: void // ETW // since THRESHOLD2 // 70
+    ProcessRaiseUMExceptionOnInvalidHandleClose, // qs: ULONG; s: 0 disables, otherwise enables
+    ProcessIumChallengeResponse,
+    ProcessChildProcessInformation,         // q: PROCESS_CHILD_PROCESS_INFORMATION
+    ProcessHighGraphicsPriorityInformation, // q: BOOLEAN; s: BOOLEAN (requires SeTcbPrivilege)
+    ProcessSubsystemInformation,            // q: SUBSYSTEM_INFORMATION_TYPE // since REDSTONE2
+    ProcessEnergyValues,                    // q: PROCESS_ENERGY_VALUES, PROCESS_EXTENDED_ENERGY_VALUES, PROCESS_EXTENDED_ENERGY_VALUES_V1
+    ProcessPowerThrottlingState,            // qs: POWER_THROTTLING_PROCESS_STATE
+    ProcessActivityThrottlePolicy,          // q: PROCESS_ACTIVITY_THROTTLE_POLICY // ProcessReserved3Information
+    ProcessWin32kSyscallFilterInformation,  // q: WIN32K_SYSCALL_FILTER
+    ProcessDisableSystemAllowedCpuSets,     // s: BOOLEAN // 80
+    ProcessWakeInformation,                 // q: PROCESS_WAKE_INFORMATION // (kernel-mode only)
+    ProcessEnergyTrackingState,             // qs: PROCESS_ENERGY_TRACKING_STATE
+    ProcessManageWritesToExecutableMemory,  // s: MANAGE_WRITES_TO_EXECUTABLE_MEMORY // since REDSTONE3
+    ProcessCaptureTrustletLiveDump,         // q: ULONG
+    ProcessTelemetryCoverage,               // q: TELEMETRY_COVERAGE_HEADER; s: TELEMETRY_COVERAGE_POINT
+    ProcessEnclaveInformation,
+    ProcessEnableReadWriteVmLogging,           // qs: PROCESS_READWRITEVM_LOGGING_INFORMATION
+    ProcessUptimeInformation,                  // q: PROCESS_UPTIME_INFORMATION
+    ProcessImageSection,                       // q: HANDLE
+    ProcessDebugAuthInformation,               // s: CiTool.exe --device-id // PplDebugAuthorization // since RS4 // 90
+    ProcessSystemResourceManagement,           // s: PROCESS_SYSTEM_RESOURCE_MANAGEMENT
+    ProcessSequenceNumber,                     // q: ULONGLONG
+    ProcessLoaderDetour,                       // qs: Obsolete // since RS5
+    ProcessSecurityDomainInformation,          // q: PROCESS_SECURITY_DOMAIN_INFORMATION
+    ProcessCombineSecurityDomainsInformation,  // s: PROCESS_COMBINE_SECURITY_DOMAINS_INFORMATION
+    ProcessEnableLogging,                      // qs: PROCESS_LOGGING_INFORMATION
+    ProcessLeapSecondInformation,              // qs: PROCESS_LEAP_SECOND_INFORMATION
+    ProcessFiberShadowStackAllocation,         // s: PROCESS_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION // since 19H1
+    ProcessFreeFiberShadowStackAllocation,     // s: PROCESS_FREE_FIBER_SHADOW_STACK_ALLOCATION_INFORMATION
+    ProcessAltSystemCallInformation,           // s: PROCESS_SYSCALL_PROVIDER_INFORMATION // since 20H1 // 100
+    ProcessDynamicEHContinuationTargets,       // s: PROCESS_DYNAMIC_EH_CONTINUATION_TARGETS_INFORMATION
+    ProcessDynamicEnforcedCetCompatibleRanges, // s: PROCESS_DYNAMIC_ENFORCED_ADDRESS_RANGE_INFORMATION // since 20H2
+    ProcessCreateStateChange,                  // s: Obsolete // since WIN11
+    ProcessApplyStateChange,                   // s: Obsolete
+    ProcessEnableOptionalXStateFeatures,       // s: ULONG64 // EnableProcessOptionalXStateFeatures
+    ProcessAltPrefetchParam,                   // qs: OVERRIDE_PREFETCH_PARAMETER // App Launch Prefetch (ALPF) // since 22H1
+    ProcessAssignCpuPartitions,                // s: HANDLE
+    ProcessPriorityClassEx,                    // s: PROCESS_PRIORITY_CLASS_EX
+    ProcessMembershipInformation,              // q: PROCESS_MEMBERSHIP_INFORMATION
+    ProcessEffectiveIoPriority,                // q: IO_PRIORITY_HINT // 110
+    ProcessEffectivePagePriority,              // q: ULONG
+    ProcessSchedulerSharedData,                // q: SCHEDULER_SHARED_DATA_SLOT_INFORMATION // since 24H2
+    ProcessSlistRollbackInformation,
+    ProcessNetworkIoCounters,              // q: PROCESS_NETWORK_COUNTERS
+    ProcessFindFirstThreadByTebValue,      // q: PROCESS_TEB_VALUE_INFORMATION // NtCurrentProcess
+    ProcessEnclaveAddressSpaceRestriction, // qs: // since 25H2
+    ProcessAvailableCpus,                  // q: PROCESS_AVAILABLE_CPUS_INFORMATION
+    MaxProcessInfoClass
+} PROCESSINFOCLASS;
+
+typedef struct _PEB PEB, *PPEB;
+
+typedef long NTSTATUS;
+
+typedef LONG KPRIORITY, *PKPRIORITY;
+
+typedef struct _PROCESS_BASIC_INFORMATION
+{
+    NTSTATUS ExitStatus;                 // The exit status of the process. (GetExitCodeProcess)
+    PPEB PebBaseAddress;                 // A pointer to the process environment block (PEB) of the process.
+    KAFFINITY AffinityMask;              // The affinity mask of the process. (GetProcessAffinityMask) (deprecated)
+    KPRIORITY BasePriority;              // The base priority of the process. (GetPriorityClass)
+    HANDLE UniqueProcessId;              // The unique identifier of the process. (GetProcessId)
+    HANDLE InheritedFromUniqueProcessId; // The unique identifier of the parent process.
+} PROCESS_BASIC_INFORMATION, *PPROCESS_BASIC_INFORMATION;
+
+extern "C" NTSTATUS WINAPI
+NtQueryInformationProcess(HANDLE ProcessHandle, PROCESSINFOCLASS ProcessInformationClass, PVOID ProcessInformation, ULONG ProcessInformationLength, PULONG ReturnLength);
+
+#elif defined(SYSTEM_OS_LINUX) || defined(SYSTEM_OS_APPLE)
+#if defined(SYSTEM_OS_LINUX)
+#include <sys/sysinfo.h> // Get uptime (second resolution)
+#include <dirent.h>
+#include <sys/prctl.h>
+#else
+#include <sys/sysctl.h>
+#include <mach-o/dyld.h>
+#include <mach-o/dyld_images.h>
+#endif
+
+#include <sys/types.h>
+#include <pwd.h>
+#include <unistd.h>
+#include <dlfcn.h>
+
+#else
+#error "unknown arch"
+#endif
+
+#include <fstream>
+
+namespace System
+{
+
+std::chrono::microseconds GetUpTime()
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - GetBootTime());
+}
+
+} // namespace System
+
+namespace System
+{
+
+#if defined(SYSTEM_OS_WINDOWS)
+
+int32_t GetParentProcessId()
+{
+    PROCESS_BASIC_INFORMATION processBasicInformation;
+    ULONG returnedLength = 0;
+
+    if (NtQueryInformationProcess(GetCurrentProcess(), ProcessBasicInformation, &processBasicInformation, sizeof(processBasicInformation), &returnedLength) < 0)
+        return (DWORD)-1;
+
+    return (DWORD)processBasicInformation.InheritedFromUniqueProcessId;
+}
+
+int32_t GetProcessId()
+{
+    return ::GetProcessId(GetCurrentProcess());
+}
+
+std::chrono::system_clock::time_point GetBootTime()
+{
+    static std::chrono::system_clock::time_point boottime(std::chrono::system_clock::now() - std::chrono::milliseconds(GetTickCount64()));
+    return boottime;
+}
+
+std::vector<std::string> GetProcArgs()
+{
+    std::vector<std::string> res;
+
+    LPWSTR *szArglist;
+    int nArgs;
+
+    szArglist = CommandLineToArgvW(GetCommandLineW(), &nArgs);
+
+    res.reserve(nArgs);
+    for (int i = 0; i < nArgs; ++i)
+    {
+        res.emplace_back(System::Encoding::UTF8::WCharToUtf8(std::wstring_view(szArglist[i])));
+    }
+
+    LocalFree(szArglist);
+
+    return res;
+}
+
+std::string GetEnvVar(std::string const &var)
+{
+    std::wstring wide(System::Encoding::UTF8::Utf8ToWChar(var));
+    std::wstring wVar;
+
+    DWORD size = GetEnvironmentVariableW(wide.c_str(), nullptr, 0);
+    // Size can be 0, and the size includes the null char, so resize to size - 1
+    if (size < 2)
+        return std::string();
+
+    wVar.resize(size - 1);
+    GetEnvironmentVariableW(wide.c_str(), &wVar[0], size);
+
+    return System::Encoding::UTF8::WCharToUtf8(wVar);
+}
+
+bool SetEnvVar(std::string const &key, std::string const &value)
+{
+    std::wstring wideKey(System::Encoding::UTF8::Utf8ToWChar(key));
+    std::wstring wideValue(System::Encoding::UTF8::Utf8ToWChar(value));
+    return SetEnvironmentVariableW(wideKey.c_str(), wideValue.c_str()) == TRUE;
+}
+
+bool UnsetEnvVar(std::string const &key)
+{
+    std::wstring wideKey(System::Encoding::UTF8::Utf8ToWChar(key));
+    return SetEnvironmentVariableW(wideKey.c_str(), nullptr) == TRUE;
+}
+
+std::string GetUserdataPath()
+{
+    WCHAR szPath[4096] = {};
+    HRESULT hr         = SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, szPath);
+
+    if (FAILED(hr))
+        return std::string();
+
+    return System::Encoding::UTF8::WCharToUtf8(std::wstring(szPath));
+}
+
+std::string GetExecutablePath()
+{
+    std::string path;
+    std::wstring wpath(4096, L'\0');
+
+    wpath.resize(GetModuleFileNameW(nullptr, &wpath[0], wpath.length()));
+    return System::Encoding::UTF8::WCharToUtf8(wpath);
+}
+
+std::string GetModulePath()
+{
+    std::string path;
+    std::wstring wpath(4096, L'\0');
+    HMODULE hModule;
+
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)&GetModulePath, &hModule) != FALSE)
+    {
+        DWORD size = GetModuleFileNameW((HINSTANCE)hModule, &wpath[0], wpath.length());
+        wpath.resize(size);
+    }
+    return System::Encoding::UTF8::WCharToUtf8(wpath);
+}
+
+std::vector<std::string> GetModules()
+{
+    std::vector<std::string> paths;
+    std::wstring wpath;
+    DWORD size;
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetProcessId());
+    if (handle_is_valid(hSnap))
+    {
+        MODULEENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        if (Module32FirstW(hSnap, &entry) != FALSE)
+        {
+            wpath.resize(4096);
+            size = GetModuleFileNameW((HINSTANCE)entry.hModule, &wpath[0], wpath.length());
+            wpath.resize(size);
+            paths.emplace_back(System::Encoding::UTF8::WCharToUtf8(wpath));
+
+            while (Module32NextW(hSnap, &entry) != FALSE)
+            {
+                wpath.resize(4096);
+                size = GetModuleFileNameW((HINSTANCE)entry.hModule, &wpath[0], wpath.length());
+                wpath.resize(size);
+                paths.emplace_back(System::Encoding::UTF8::WCharToUtf8(wpath));
+            }
+        }
+
+        CloseHandle(hSnap);
+    }
+
+    return paths;
+}
+
+bool SetCurrentThreadName(std::string const &thread_name)
+{
+    bool success     = false;
+    auto wname       = System::Encoding::UTF8::Utf8ToWChar(thread_name);
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (kernel32 != nullptr)
+    {
+        auto pSetThreadDescription = (HRESULT(WINAPI *)(HANDLE, PCWSTR))GetProcAddress(kernel32, "SetThreadDescription");
+        if (pSetThreadDescription != nullptr)
+            success = !FAILED(pSetThreadDescription(GetCurrentThread(), wname.c_str()));
+    }
+
+    return success;
+}
+
+TranslatedMode GetTranslatedMode()
+{
+    return TranslatedMode::Unavailable;
+}
+
+#elif defined(SYSTEM_OS_LINUX) || defined(SYSTEM_OS_APPLE)
+#ifdef SYSTEM_OS_LINUX
+
+std::chrono::system_clock::time_point GetBootTime()
+{
+    static std::chrono::system_clock::time_point boottime(std::chrono::seconds(0));
+    if (boottime == std::chrono::system_clock::time_point{})
+    {
+        std::ifstream uptime_file("/proc/uptime");
+
+        double uptime;
+        if (uptime_file)
+        { // Get uptime (millisecond resolution)
+            uptime_file >> uptime;
+            uptime_file.close();
+        }
+        else
+        { // If we can't open /proc/uptime, fallback to sysinfo (second resolution)
+            struct sysinfo infos;
+            if (sysinfo(&infos) != 0)
+                return boottime;
+
+            uptime = infos.uptime;
+        }
+
+        std::chrono::system_clock::time_point now_tp = std::chrono::system_clock::now();
+        std::chrono::system_clock::time_point uptime_tp(std::chrono::milliseconds(static_cast<uint64_t>(uptime * 1000)));
+
+        boottime = std::chrono::system_clock::time_point(now_tp - uptime_tp);
+    }
+
+    return boottime;
+}
+
+std::string GetExecutablePath()
+{
+    std::string execPath(System::ExpandSymlink("/proc/self/exe"));
+
+    if (execPath.empty())
+        return "./";
+
+    return execPath;
+}
+
+std::string GetModulePath()
+{
+    std::string const self("/proc/self/map_files/");
+    DIR *dir;
+    struct dirent *dir_entry;
+    std::string file_path;
+    std::string res;
+    uint64_t handle = (uint64_t)(uintptr_t)&GetModulePath;
+    uint64_t low, high;
+    char *tmp;
+
+    dir = opendir(self.c_str());
+    if (dir != nullptr)
+    {
+        while ((dir_entry = readdir(dir)) != nullptr)
+        {
+            file_path = dir_entry->d_name;
+            if (dir_entry->d_type != DT_LNK)
+            { // Not a link
+                continue;
+            }
+
+            tmp = &file_path[0];
+            low = strtoull(tmp, &tmp, 16);
+            if ((tmp - file_path.c_str()) < file_path.length())
+            {
+                high = strtoull(tmp + 1, nullptr, 16);
+                if (low != 0 && high > low && low <= handle && handle <= high)
+                {
+                    res = System::ExpandSymlink(self + file_path);
+                    break;
+                }
+            }
+        }
+
+        closedir(dir);
+    }
+
+    return res;
+}
+
+std::vector<std::string> GetModules()
+{
+    std::string const self("/proc/self/map_files/");
+    std::vector<std::string> paths;
+
+    DIR *dir;
+    struct dirent *dir_entry;
+    std::string path;
+    bool found;
+
+    dir = opendir(self.c_str());
+    if (dir != nullptr)
+    {
+        while ((dir_entry = readdir(dir)) != nullptr)
+        {
+            if (dir_entry->d_type != DT_LNK)
+            { // Not a link
+                continue;
+            }
+
+            found = false;
+            path  = System::ExpandSymlink(self + dir_entry->d_name);
+            for (auto const &item : paths)
+            {
+                if (item == path)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                paths.emplace_back(std::move(path));
+        }
+
+        closedir(dir);
+    }
+
+    return paths;
+}
+
+std::vector<std::string> GetProcArgs()
+{
+    std::vector<std::string> res;
+    std::ifstream fcmdline("/proc/self/cmdline", std::ios::in | std::ios::binary);
+
+    if (fcmdline)
+    {
+        for (std::string line; std::getline(fcmdline, line, '\0');)
+        {
+            res.emplace_back(std::move(line));
+        }
+    }
+
+    return res;
+}
+
+bool SetCurrentThreadName(std::string const &thread_name)
+{
+    return prctl(PR_SET_NAME, thread_name.c_str()) == 0;
+}
+
+TranslatedMode GetTranslatedMode()
+{
+    return TranslatedMode::Unavailable;
+}
+
+#else
+
+std::chrono::system_clock::time_point GetBootTime()
+{
+    static std::chrono::system_clock::time_point boottime{};
+    if (boottime == std::chrono::system_clock::time_point{})
+    {
+        struct timeval boottime_tv;
+        size_t len = sizeof(boottime_tv);
+        int mib[2] = {CTL_KERN, KERN_BOOTTIME};
+        if (sysctl(mib, sizeof(mib) / sizeof(*mib), &boottime_tv, &len, nullptr, 0) < 0)
+            return boottime;
+
+        boottime = std::chrono::system_clock::time_point(std::chrono::seconds(boottime_tv.tv_sec) + std::chrono::microseconds(boottime_tv.tv_usec));
+    }
+
+    return boottime;
+}
+
+std::string GetExecutablePath()
+{
+    std::string exec_path;
+    uint32_t buf_size = 0;
+
+    if (_NSGetExecutablePath(&exec_path[0], &buf_size) == -1)
+    {
+        exec_path.resize(buf_size - 1);
+        if (_NSGetExecutablePath(&exec_path[0], &buf_size) == 0)
+        {
+            size_t pos;
+            while ((pos = exec_path.find("/./")) != std::string::npos)
+            {
+                exec_path.replace(pos, 3, "/");
+            }
+            return exec_path;
+        }
+    }
+
+    return exec_path;
+}
+
+// Workaround for MacOS, I don't know how to get module path from address.
+SYSTEM_EXPORT_API(SYSTEM_EXTERN_C, void, SYSTEM_MODE_EXPORT, SYSTEM_CALL_DEFAULT) GetModulePathPlaceholder()
+{
+}
+
+std::string GetModulePath()
+{
+    task_dyld_info dyld_info;
+    task_t t;
+    pid_t pid = getpid();
+    task_for_pid(mach_task_self(), pid, &t);
+    mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+
+    if (task_info(t, TASK_DYLD_INFO, reinterpret_cast<task_info_t>(&dyld_info), &count) == KERN_SUCCESS)
+    {
+        dyld_all_image_infos *dyld_img_infos = reinterpret_cast<dyld_all_image_infos *>(dyld_info.all_image_info_addr);
+        for (int i = 0; i < dyld_img_infos->infoArrayCount; ++i)
+        {
+            void *res = dlopen(dyld_img_infos->infoArray[i].imageFilePath, RTLD_NOW);
+            if (res != nullptr)
+            {
+                void *placeholder = dlsym(res, "GetModulePathPlaceholder");
+                dlclose(res);
+                if (placeholder == (void *)&GetModulePathPlaceholder)
+                {
+                    std::string res(dyld_img_infos->infoArray[i].imageFilePath);
+                    size_t pos;
+                    while ((pos = res.find("/./")) != std::string::npos)
+                    {
+                        res.replace(pos, 3, "/");
+                    }
+                    return res;
+                }
+            }
+        }
+    }
+
+    return std::string();
+}
+
+std::vector<std::string> GetModules()
+{
+    std::vector<std::string> paths;
+    std::string path;
+    size_t pos;
+    task_dyld_info dyld_info;
+    task_t t;
+    pid_t pid = getpid();
+    task_for_pid(mach_task_self(), pid, &t);
+    mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+
+    if (task_info(t, TASK_DYLD_INFO, reinterpret_cast<task_info_t>(&dyld_info), &count) == KERN_SUCCESS)
+    {
+        dyld_all_image_infos *dyld_img_infos = reinterpret_cast<dyld_all_image_infos *>(dyld_info.all_image_info_addr);
+        for (int i = 0; i < dyld_img_infos->infoArrayCount; ++i)
+        {
+            path = dyld_img_infos->infoArray[i].imageFilePath;
+            while ((pos = path.find("/./")) != std::string::npos)
+            {
+                path.replace(pos, 3, "/");
+            }
+            paths.emplace_back(std::move(path));
+        }
+    }
+
+    return paths;
+}
+
+std::vector<std::string> GetProcArgs()
+{
+    std::vector<std::string> res;
+    int mib[3];
+    int argmax;
+    size_t size;
+    int nargs;
+
+    mib[0] = CTL_KERN;
+    mib[1] = KERN_ARGMAX;
+
+    size = sizeof(argmax);
+    if (sysctl(mib, 2, &argmax, &size, NULL, 0) == -1)
+    {
+        return res;
+    }
+
+    std::unique_ptr<char[]> procargs(new char[argmax]);
+    if (procargs == nullptr)
+    {
+        return res;
+    }
+
+    mib[0] = CTL_KERN;
+    mib[1] = KERN_PROCARGS2;
+    mib[2] = getpid();
+
+    size = (size_t)argmax;
+    if (sysctl(mib, 3, procargs.get(), &size, NULL, 0) == -1)
+    {
+        return res;
+    }
+
+    memcpy(&nargs, procargs.get(), sizeof(nargs));
+    if (nargs <= 0)
+    {
+        return res;
+    }
+
+    char *args_end     = procargs.get() + size;
+    char *arg_iterator = procargs.get() + sizeof(nargs);
+    // Skip saved exec path
+    while (*arg_iterator != '\0' && arg_iterator < args_end)
+    {
+        ++arg_iterator;
+    }
+    // Skip trailing(s) '\0'
+    while (*arg_iterator == '\0' && arg_iterator < args_end)
+    {
+        ++arg_iterator;
+    }
+
+    res.reserve(nargs);
+    char *arg = arg_iterator;
+    for (int i = 0; i < nargs && arg_iterator < args_end; ++arg_iterator)
+    {
+        if (*arg_iterator == '\0')
+        {
+            ++i;
+            res.emplace_back(arg);
+            arg = arg_iterator + 1;
+        }
+    }
+
+    return res;
+}
+
+bool SetCurrentThreadName(std::string const &thread_name)
+{
+    return pthread_setname_np(thread_name.c_str()) == 0;
+}
+
+TranslatedMode GetTranslatedMode()
+{
+    int ret     = 0;
+    size_t size = sizeof(ret);
+
+    // Call the sysctl and if successful return the result
+    if (sysctlbyname("sysctl.proc_translated", &ret, &size, NULL, 0) != -1)
+        return ret == 0 ? TranslatedMode::Native : TranslatedMode::Translated;
+
+    // If "sysctl.proc_translated" is not present then must be native
+    if (errno == ENOENT)
+        return TranslatedMode::Native;
+
+    return TranslatedMode::Unavailable;
+}
+
+#endif
+
+int32_t GetParentProcessId()
+{
+    return getppid();
+}
+
+int32_t GetProcessId()
+{
+    return getpid();
+}
+
+std::string GetUserdataPath()
+{
+    std::string user_appdata_path;
+    /*
+    ~/Library/Application Support/<application name>
+    ~/Library/Preferences/<application name>
+    ~/Library/<application name>/
+    */
+
+    struct passwd *user_entry = getpwuid(getuid());
+    if (user_entry == nullptr || user_entry->pw_dir == nullptr)
+    {
+        char *env_var = getenv("HOME");
+        if (env_var != nullptr)
+        {
+            user_appdata_path = env_var;
+        }
+    }
+    else
+    {
+        user_appdata_path = user_entry->pw_dir;
+    }
+
+    if (!user_appdata_path.empty())
+    {
+#ifdef SYSTEM_OS_LINUX
+        user_appdata_path = System::Filesystem::Join(user_appdata_path, ".config");
+#else
+        user_appdata_path = System::Filesystem::Join(user_appdata_path, "Library", "Application Support");
+#endif
+    }
+
+    return user_appdata_path;
+}
+
+std::string GetEnvVar(std::string const &var)
+{
+    char *env = getenv(var.c_str());
+    if (env == nullptr)
+        return std::string();
+
+    return env;
+}
+
+bool SetEnvVar(std::string const &key, std::string const &value)
+{
+    return setenv(key.c_str(), value.c_str(), 1) == 0;
+}
+
+bool UnsetEnvVar(std::string const &key)
+{
+    return unsetenv(key.c_str()) == 0;
+}
+
+#endif
+
+} // namespace System

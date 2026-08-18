@@ -131,6 +131,13 @@ endif()
 
 find_package(Threads REQUIRED)
 
+# The vendored System / mini_detour / imgui sources are written for MSVC.
+# When cross-compiling for Windows with clang, MSVC-style code needs its
+# extensions (e.g. pointer-to-int casts that clang otherwise rejects).
+if(WIN32)
+  add_compile_options(-fms-extensions -Wno-void-pointer-to-int-cast)
+endif()
+
 if(NOT ${IMGUI_USER_CONFIG} STREQUAL "")
   set(IMGUI_USER_CONFIG_VALUE IMGUI_USER_CONFIG="${IMGUI_USER_CONFIG}")
   get_filename_component(IMGUI_USER_CONFIG_NAME_VALUE ${IMGUI_USER_CONFIG} NAME)
@@ -265,6 +272,43 @@ target_compile_definitions(ingame_overlay
 
 add_library(Nemirtingas::InGameOverlay ALIAS ingame_overlay)
 set_target_properties(ingame_overlay PROPERTIES EXPORT_NAME InGameOverlay)
+
+#############################
+## Everyone overlay bridge
+#############################
+add_library(everyone_overlay SHARED
+    bridge/everyone_overlay.cpp
+)
+
+target_link_libraries(everyone_overlay
+    PRIVATE
+    Nemirtingas::InGameOverlay
+    Threads::Threads
+)
+
+# Keep imgui.h configuration consistent with the ingame_overlay build.
+target_compile_definitions(everyone_overlay PRIVATE
+    IMGUI_DISABLE_OBSOLETE_KEYIO
+    IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+    IMGUI_DISABLE_APPLE_GAMEPAD
+)
+
+set_target_properties(everyone_overlay PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
+
+if(WIN32)
+    # Windows convention: everyone_overlay.dll (no "lib" prefix).
+    set_target_properties(everyone_overlay PROPERTIES PREFIX "")
+
+    # Ship a self-contained DLL: no mingw C++ runtime DLLs, and link the
+    # Win32 imports that imgui_impl_win32 needs (MSVC gets those via
+    # `#pragma comment(lib)` which lld/mingw ignores).
+    target_link_libraries(everyone_overlay PRIVATE -static-libgcc -static-libstdc++ user32 gdi32 dwmapi)
+endif()
 
 if(${INGAMEOVERLAY_BUILD_TESTS})
 
