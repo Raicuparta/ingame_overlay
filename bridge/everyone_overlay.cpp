@@ -11,7 +11,6 @@
 //   int  everyone_overlay_is_ready(void)       -> 1 once the overlay is hooked
 //   void everyone_overlay_set_text(const char*) -> change the rendered text
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -19,20 +18,8 @@
 #include <string>
 #include <thread>
 
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
-
 #include <imgui.h>
 #include <InGameOverlay/RendererDetector.h>
-
-// X11 headers must come after InGameOverlay's headers: Xlib defines generic
-// macros (None, Status, ...) that collide with InGameOverlay's enums.
-#if defined(__linux__) && !defined(__APPLE__)
-#include <X11/Xlib.h>
-#undef Status
-#endif
 
 #if defined(_WIN32)
 #define EVERYONE_OVERLAY_EXPORT extern "C" __declspec(dllexport)
@@ -54,47 +41,16 @@ namespace
     bool g_visible = true;
     std::string g_text = "hello world";
 
-    // The overlay text is designed against a 1080p reference screen. Scaling
-    // by the *physical screen height* (in the game process's own coordinate
-    // space) keeps the text a constant physical size on screen, regardless of
-    // the game resolution, windowed vs fullscreen, or DPI awareness:
-    //
-    //   - High-DPI displays (4K, 1440p) get a bigger scale, so the text is
-    //     readable even when the game runs at 1080p on them (previously the
-    //     text stayed a fixed 13px sliver in those cases).
-    //   - 1080p displays get scale 1.0, so the text looks exactly as before
-    //     (never "too big" on low-DPI setups).
-    //   - In exclusive fullscreen the display mode changes, so the reported
-    //     screen height matches the back buffer and the scale compensates for
-    //     the upscale exactly (constant physical size at any resolution).
-    //
-    // GetSystemMetrics(SM_CYSCREEN) is returned in the process's coordinate
-    // space: physical pixels for DPI-aware games, virtualized pixels for
-    // DPI-unaware games (which Windows bitmap-stretches by the same factor),
-    // so no DPI-awareness handling is needed here.
-    float GetScreenHeightPx()
-    {
-#if defined(_WIN32)
-        return static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
-#elif defined(__linux__) && !defined(__APPLE__)
-        static Display* display = XOpenDisplay(nullptr);
-        if (display != nullptr)
-            return static_cast<float>(DisplayHeight(display, DefaultScreen(display)));
-        return 0.0f; // e.g. Wayland without XWayland; caller falls back to the viewport height
-#else
-        return 0.0f;
-#endif
-    }
+    // Flat text scale factor applied to the overlay's ImGui default font
+    // (13px) and to the window's corner margin. Kept simple and platform-free:
+    // no screen/DPI queries, so it behaves identically everywhere and cannot
+    // fail on unusual monitor setups. 1.5x was chosen as a comfortable
+    // baseline; tune this constant if you want it bigger/smaller.
+    constexpr float kTextScale = 1.5f;
 
     float OverlayScale()
     {
-        const float kReferenceHeight = 1080.0f;
-        float screenHeight = GetScreenHeightPx();
-        if (screenHeight <= 0.0f)
-            screenHeight = ImGui::GetIO().DisplaySize.y; // fallback: scale by viewport instead
-        if (screenHeight <= 0.0f)
-            return 1.0f;
-        return std::max(1.0f, screenHeight / kReferenceHeight);
+        return kTextScale;
     }
 
     void OverlayDraw()
