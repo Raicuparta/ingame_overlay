@@ -10,6 +10,7 @@
 //   int  everyone_overlay_stop(void)           -> 0 on success
 //   int  everyone_overlay_is_ready(void)       -> 1 once the overlay is hooked
 //   void everyone_overlay_set_text(const char*) -> change the rendered text
+//   void everyone_overlay_set_text_scale(float) -> scale factor for the rendered text
 
 #include <atomic>
 #include <chrono>
@@ -41,16 +42,16 @@ namespace
     bool g_visible = true;
     std::string g_text = "hello world";
 
-    // Flat text scale factor applied to the overlay's ImGui default font
-    // (13px) and to the window's corner margin. Kept simple and platform-free:
-    // no screen/DPI queries, so it behaves identically everywhere and cannot
-    // fail on unusual monitor setups. 1.5x was chosen as a comfortable
-    // baseline; tune this constant if you want it bigger/smaller.
-    constexpr float kTextScale = 1.5f;
+    // Text scale factor, set from the C# side via everyone_overlay_set_text_scale.
+    // The C# side computes it from the game window's actual monitor (not the
+    // primary monitor), so it stays correct on multi-monitor setups and when
+    // the resolution/display mode changes. 1.5f is the fallback baseline used
+    // until (or unless) the C# side provides a value.
+    std::atomic<float> g_text_scale{ 1.5f };
 
     float OverlayScale()
     {
-        return kTextScale;
+        return g_text_scale.load();
     }
 
     void OverlayDraw()
@@ -204,4 +205,10 @@ EVERYONE_OVERLAY_EXPORT void everyone_overlay_set_text(const char* text)
 
     std::lock_guard<std::mutex> lock(g_mutex);
     g_text = text;
+}
+
+EVERYONE_OVERLAY_EXPORT void everyone_overlay_set_text_scale(float scale)
+{
+    if (scale > 0.0f)
+        g_text_scale.store(scale);
 }
