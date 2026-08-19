@@ -11,6 +11,7 @@
 //   int  everyone_overlay_is_ready(void)       -> 1 once the overlay is hooked
 //   void everyone_overlay_set_text(const char*) -> change the rendered text
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -41,13 +42,34 @@ namespace
     bool g_visible = true;
     std::string g_text = "hello world";
 
+    // The overlay text is designed against a 1080p reference viewport. Scaling
+    // by the current viewport height keeps the text the same size *relative to
+    // the game* on any resolution or DPI:
+    //
+    //   - On a high-DPI display (e.g. 4K native) the text renders at 2x the
+    //     base size, so it stays readable instead of a fixed 13px sliver.
+    //   - Lowering the render resolution scales the text up in viewport pixels
+    //     (exactly like the game image is scaled), so windowed and fullscreen
+    //     now behave the same instead of the old fixed-pixel size.
+    //   - The scale never drops below 1.0, so text is never smaller than the
+    //     13px baseline on sub-1080p screens, and 1080p displays are unchanged.
+    float OverlayScale()
+    {
+        const float kReferenceHeight = 1080.0f;
+        float viewportHeight = ImGui::GetIO().DisplaySize.y;
+        if (viewportHeight <= 0.0f)
+            return 1.0f;
+        return std::max(1.0f, viewportHeight / kReferenceHeight);
+    }
+
     void OverlayDraw()
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (!g_visible)
             return;
 
-        ImGui::SetNextWindowPos(ImVec2{ 16.0f, 16.0f });
+        float scale = OverlayScale();
+        ImGui::SetNextWindowPos(ImVec2{ 16.0f * scale, 16.0f * scale });
         ImGui::SetNextWindowBgAlpha(0.5f);
         ImGui::Begin(
             "Everyone",
@@ -59,7 +81,9 @@ namespace
             ImGuiWindowFlags_NoBringToFrontOnFocus |
             ImGuiWindowFlags_AlwaysAutoResize);
 
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * scale);
         ImGui::TextUnformatted(g_text.c_str());
+        ImGui::PopFont();
         ImGui::End();
     }
 
