@@ -230,6 +230,12 @@ void X11Hook_t::ResetRenderState(OverlayHookState state)
 
 bool X11Hook_t::SetInitialWindowSize(Window wnd)
 {
+    // _Display is normally captured from the game's own XPending/XEventsQueued
+    // calls, but those may not have happened yet (or the game may be idle), so
+    // open our own connection if needed.
+    if (_Display == nullptr)
+        _Display = XOpenDisplay(nullptr);
+
     if (_Display == nullptr)
         return false;
 

@@ -18,9 +18,11 @@
  */
 
 #include <cassert>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <InGameOverlay/RendererDetector.h>
 #include "../VulkanHelpers.h"
@@ -36,6 +38,7 @@
 
 #include "OpenGLXHook.h"
 #include "VulkanHook.h"
+#include "PresentPointerHook.h"
 
 #define TRY_HOOK_FUNCTION(NAME, HOOK) do { if (!_DetectionHooks.HookFunc(std::make_pair<void**, void*>(&(void*&)NAME, (void*)HOOK))) { \
     INGAMEOVERLAY_ERROR("Failed to hook {}", #NAME); } } while(0)
@@ -206,8 +209,13 @@ static VulkanDriver_t GetVulkanDriver(std::string_view const& vulkanLibraryPath)
     auto _vkQueuePresentKHR = (decltype(::vkQueuePresentKHR)*)_vkGetDeviceProcAddr(_vkDevice, "vkQueuePresentKHR");
     auto _vkCreateSwapchainKHR = (decltype(::vkCreateSwapchainKHR)*)_vkGetDeviceProcAddr(_vkDevice, "vkCreateSwapchainKHR");
 
-    _vkDestroyDevice(_vkDevice, nullptr);
-    _vkDestroyInstance(_vkInstance, nullptr);
+    // Keep the probe instance/device alive for the process lifetime. On the
+    // NVIDIA Linux driver the vkQueuePresentKHR pointer handed out by
+    // vkGetDeviceProcAddr() is only valid while that device's dispatch table
+    // exists; destroying the device here made the later hook call into a dead
+    // dispatch and crash. (The Windows loaders return a device-independent
+    // trampoline, so this only affected Linux.)
+    (void)_vkDestroyDevice;
 
     if (_vkAcquireNextImageKHR == nullptr ||
         _vkQueuePresentKHR == nullptr ||
@@ -304,6 +312,10 @@ private:
     decltype(::glXSwapBuffers)* _GLXSwapBuffers;
     decltype(::vkQueuePresentKHR)* _VkQueuePresentKHR;
 
+    // Addresses whose stored vkQueuePresentKHR pointer was replaced by
+    // PatchFunctionPointer, so the patches can be undone on hand-off.
+    std::vector<uintptr_t> _PresentPatchedAddresses;
+
     bool _OpenGLXHooked;
     bool _VulkanHooked;
 
@@ -325,6 +337,12 @@ private:
     template<typename T>
     void _HookDetected(T*& detected_renderer)
     {
+        if (!_PresentPatchedAddresses.empty())
+        {
+            RestoreFunctionPointers(_PresentPatchedAddresses, reinterpret_cast<void*>(_VkQueuePresentKHR));
+            _PresentPatchedAddresses.clear();
+        }
+
         _DetectionHooks.UnhookAll();
         _RendererHook = static_cast<InGameOverlay::RendererHook_t*>(detected_renderer);
         detected_renderer = nullptr;
@@ -397,9 +415,28 @@ private:
 
                 _VkQueuePresentKHR = driver.vkQueuePresentKHR;
 
-                _DetectionHooks.BeginHook();
-                TRY_HOOK_FUNCTION(_VkQueuePresentKHR, &RendererDetector_t::_MyvkQueuePresentKHR);
-                _DetectionHooks.EndHook();
+                // Prefer patching the stored function pointer over an inline
+                // detour: on the NVIDIA Linux driver, relocating its prologue
+                // into a callable trampoline yields code that traps (ud2).
+                // Patching the pointer leaves the driver intact, so the hook
+                // can call the saved original directly.
+                const size_t patched = PatchFunctionPointer(
+                    reinterpret_cast<void*>(_VkQueuePresentKHR),
+                    reinterpret_cast<void*>(&RendererDetector_t::_MyvkQueuePresentKHR),
+                    _PresentPatchedAddresses,
+                    &_VkQueuePresentKHR);
+
+                if (patched > 0)
+                {
+                    INGAMEOVERLAY_INFO("Patched {} vkQueuePresentKHR pointer(s)", patched);
+                }
+                else
+                {
+                    // Fallback: inline detour.
+                    _DetectionHooks.BeginHook();
+                    TRY_HOOK_FUNCTION(_VkQueuePresentKHR, &RendererDetector_t::_MyvkQueuePresentKHR);
+                    _DetectionHooks.EndHook();
+                }
             }
             else
             {
@@ -416,6 +453,13 @@ private:
     void _ExitDetection()
     {
         _DetectionDone = true;
+
+        if (!_PresentPatchedAddresses.empty())
+        {
+            RestoreFunctionPointers(_PresentPatchedAddresses, reinterpret_cast<void*>(_VkQueuePresentKHR));
+            _PresentPatchedAddresses.clear();
+        }
+
         _DetectionHooks.UnhookAll();
 
         _OpenGLXHooked = false;

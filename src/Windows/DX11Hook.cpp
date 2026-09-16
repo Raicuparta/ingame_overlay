@@ -20,6 +20,8 @@
 #include "DX11Hook.h"
 #include "WindowsHook.h"
 
+#include <cstring>
+
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <backends/imgui_impl_dx11.h>

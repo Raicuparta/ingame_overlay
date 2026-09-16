@@ -14,7 +14,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -22,16 +25,25 @@
 #include <imgui.h>
 #include <InGameOverlay/RendererDetector.h>
 
+#include "debug_log.h"
+
 #if defined(_WIN32)
 #define EVERYONE_OVERLAY_EXPORT extern "C" __declspec(dllexport)
 #else
 #define EVERYONE_OVERLAY_EXPORT extern "C" __attribute__((visibility("default")))
 #endif
 
+// Forward declaration so the optional auto-start below can call the real
+// exported entry point.
+extern "C" int everyone_overlay_start();
+
 namespace
 {
     std::mutex g_mutex;
-    std::thread g_worker;
+    // Heap-allocated so that a normal process exit (which never calls
+    // everyone_overlay_stop) can't run a joinable std::thread destructor and
+    // std::terminate the host. The pointer intentionally leaks on exit.
+    std::thread* g_worker = nullptr;
 
     std::atomic<bool> g_started{ false };
     std::atomic<bool> g_stop{ false };
@@ -81,6 +93,8 @@ namespace
 
     void OverlayHookReady(InGameOverlay::OverlayHookState state)
     {
+        DebugLog("[everyone-overlay] hook state: %d", static_cast<int>(state));
+
         std::lock_guard<std::mutex> lock(g_mutex);
 
         if (state == InGameOverlay::OverlayHookState::Ready)
@@ -93,6 +107,7 @@ namespace
                 g_renderer->HideOverlayInputs(true);
             }
             g_ready = true;
+            DebugLog("[everyone-overlay] hook ready");
         }
         else if (state == InGameOverlay::OverlayHookState::Removing)
         {
@@ -117,30 +132,46 @@ namespace
     {
         // Kick off detection, then poll until the game actually renders a frame
         // through the detected renderer (which is when detection completes).
+        DebugLog("[everyone-overlay] detect: initial pass");
         InGameOverlay::DetectRenderer();
+        DebugLog("[everyone-overlay] detect: initial pass done");
         InGameOverlay::StopRendererDetection();
+        DebugLog("[everyone-overlay] detect: stopped initial detection");
 
+        int loops = 0;
         while (!g_stop.load())
         {
+            ++loops;
+            if (loops <= 3 || loops % 25 == 0)
+                DebugLog("[everyone-overlay] detect: poll %d", loops);
+
             if (!InGameOverlay::DetectRenderer(true))
                 break;
 
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
+        DebugLog("[everyone-overlay] detect: finished (%d polls)", loops);
 
         return InGameOverlay::GetDetectedRenderer();
     }
 
     void WorkerMain()
     {
+        DebugLog("[everyone-overlay] waiting for a renderer...");
         InGameOverlay::RendererHook_t* renderer = DetectRenderer();
 
         if (g_stop.load() || renderer == nullptr)
         {
+            DebugLog("[everyone-overlay] no renderer detected");
             InGameOverlay::StopRendererDetection();
             InGameOverlay::FreeDetector();
             return;
         }
+
+        DebugLog(
+            "[everyone-overlay] renderer detected: %s (type %d)",
+            renderer->GetLibraryName() != nullptr ? renderer->GetLibraryName() : "?",
+            static_cast<int>(renderer->GetRendererHookType()));
 
         {
             std::lock_guard<std::mutex> lock(g_mutex);
@@ -151,11 +182,36 @@ namespace
         renderer->OverlayHookReady = [](InGameOverlay::OverlayHookState state) { OverlayHookReady(state); };
 
         InGameOverlay::ToggleKey toggleKeys[] = { InGameOverlay::ToggleKey::F2 };
-        renderer->StartHook([]() { ToggleOverlay(); }, toggleKeys, 1);
+        bool hookStarted = renderer->StartHook([]() { ToggleOverlay(); }, toggleKeys, 1);
+        DebugLog("[everyone-overlay] StartHook returned %d", hookStarted ? 1 : 0);
 
         // The detector is no longer needed once we own the renderer hook.
         InGameOverlay::FreeDetector();
     }
+
+    // Optional auto-start for injection methods that only *load* the library
+    // (e.g. LD_PRELOAD into an engine with no native mod loader, like Godot).
+    // Opt-in via env var so the normal Unity path, which calls
+    // everyone_overlay_start() itself after dlopen, is completely unaffected.
+    // Deferred a moment so the library's own static initializers are done
+    // before the worker thread starts.
+    struct AutoStart_t
+    {
+        AutoStart_t()
+        {
+            if (std::getenv("EVERYONE_OVERLAY_AUTOSTART") == nullptr)
+                return;
+
+            DebugLog("[everyone-overlay] autostart requested");
+            std::thread([]()
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                everyone_overlay_start();
+            }).detach();
+        }
+    };
+
+    AutoStart_t g_autoStart;
 }
 
 EVERYONE_OVERLAY_EXPORT int everyone_overlay_start()
@@ -164,7 +220,7 @@ EVERYONE_OVERLAY_EXPORT int everyone_overlay_start()
         return 0; // already running
 
     g_stop = false;
-    g_worker = std::thread(WorkerMain);
+    g_worker = new std::thread(WorkerMain);
     return 0;
 }
 
@@ -176,8 +232,13 @@ EVERYONE_OVERLAY_EXPORT int everyone_overlay_stop()
     g_stop = true;
 
     // Wait for the detection/startup worker to finish before tearing down.
-    if (g_worker.joinable())
-        g_worker.join();
+    if (g_worker != nullptr)
+    {
+        if (g_worker->joinable())
+            g_worker->join();
+        delete g_worker;
+        g_worker = nullptr;
+    }
 
     InGameOverlay::RendererHook_t* renderer = nullptr;
     {

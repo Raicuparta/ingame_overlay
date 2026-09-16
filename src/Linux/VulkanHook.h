@@ -151,6 +151,10 @@ private:
     decltype(::vkCreateSwapchainKHR)  * _VkCreateSwapchainKHR;
     decltype(::vkDestroyDevice)       * _VkDestroyDevice;
 
+    // Addresses whose stored vkQueuePresentKHR pointer was replaced by
+    // PatchFunctionPointer, so the patches can be undone on teardown.
+    std::vector<uintptr_t> _PresentPatchedAddresses;
+
     static VKAPI_ATTR VkResult VKAPI_CALL _MyVkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* pImageIndex);
     static VKAPI_ATTR VkResult VKAPI_CALL _MyVkAcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* pAcquireInfo, uint32_t* pImageIndex);
     static VKAPI_ATTR VkResult VKAPI_CALL _MyVkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);

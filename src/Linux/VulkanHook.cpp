@@ -19,6 +19,7 @@
 
 #include "VulkanHook.h"
 #include "X11Hook.h"
+#include "PresentPointerHook.h"
 
 #undef Status
 
@@ -107,7 +108,16 @@ bool VulkanHook_t::StartHook(std::function<void()> keyCombinationCallback, Toggl
         if (_VkAcquireNextImage2KHR != nullptr)
             TRY_HOOK_FUNCTION_OR_FAIL(VkAcquireNextImage2KHR);
 
-        TRY_HOOK_FUNCTION_OR_FAIL(VkQueuePresentKHR);
+        // Prefer patching the stored pointer over an inline detour (see
+        // PresentPointerHook.h): the NVIDIA Linux driver prologue cannot be
+        // relocated into a working trampoline, so the detour traps (ud2).
+        const size_t presentPatches = PatchFunctionPointer(
+            reinterpret_cast<void*>(_VkQueuePresentKHR),
+            reinterpret_cast<void*>(&VulkanHook_t::_MyVkQueuePresentKHR),
+            _PresentPatchedAddresses,
+            &_VkQueuePresentKHR);
+        if (presentPatches == 0)
+            TRY_HOOK_FUNCTION_OR_FAIL(VkQueuePresentKHR);
         TRY_HOOK_FUNCTION_OR_FAIL(VkCreateSwapchainKHR);
         TRY_HOOK_FUNCTION_OR_FAIL(VkDestroyDevice);
         EndHook();
@@ -1524,6 +1534,12 @@ VulkanHook_t::VulkanHook_t() :
 VulkanHook_t::~VulkanHook_t()
 {
     INGAMEOVERLAY_INFO("VulkanHook_t Hook removed");
+
+    if (!_PresentPatchedAddresses.empty())
+    {
+        RestoreFunctionPointers(_PresentPatchedAddresses, reinterpret_cast<void*>(_VkQueuePresentKHR));
+        _PresentPatchedAddresses.clear();
+    }
 
     if (_X11Hooked)
         delete X11Hook_t::Inst();

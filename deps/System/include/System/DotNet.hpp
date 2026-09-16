@@ -21,6 +21,7 @@
 
 #include <System/SystemDetector.h>
 #include <System/FunctionTraits.hpp>
+#include <cstdint>
 #include <string>
 
 #if defined(SYSTEM_OS_WINDOWS)

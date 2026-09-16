@@ -88,6 +88,7 @@ elseif(UNIX)
     src/Linux/OpenGLXHook.cpp
     src/Linux/X11Hook.cpp
     src/Linux/VulkanHook.cpp
+    src/Linux/PresentPointerHook.cpp
   )
 
   set(PRIVATE_INGAMEOVERLAY_HEADERS
@@ -134,8 +135,11 @@ find_package(Threads REQUIRED)
 # The vendored System / mini_detour / imgui sources are written for MSVC.
 # When cross-compiling for Windows with clang, MSVC-style code needs its
 # extensions (e.g. pointer-to-int casts that clang otherwise rejects).
+# mingw also ships lowercase windows.h/tlhelp32.h while the sources use the
+# MSVC casing, so compat/ provides case-fixing shims.
 if(WIN32)
-  add_compile_options(-fms-extensions -Wno-void-pointer-to-int-cast)
+  add_compile_options(-fms-extensions -Wno-void-pointer-to-int-cast -fpermissive)
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/compat)
 endif()
 
 if(NOT ${IMGUI_USER_CONFIG} STREQUAL "")
@@ -278,6 +282,8 @@ set_target_properties(ingame_overlay PROPERTIES EXPORT_NAME InGameOverlay)
 #############################
 add_library(everyone_overlay SHARED
     bridge/everyone_overlay.cpp
+    bridge/gdextension_entry.cpp
+    bridge/debug_log.cpp
 )
 
 target_link_libraries(everyone_overlay
@@ -304,10 +310,12 @@ if(WIN32)
     # Windows convention: everyone_overlay.dll (no "lib" prefix).
     set_target_properties(everyone_overlay PROPERTIES PREFIX "")
 
-    # Ship a self-contained DLL: no mingw C++ runtime DLLs, and link the
-    # Win32 imports that imgui_impl_win32 needs (MSVC gets those via
-    # `#pragma comment(lib)` which lld/mingw ignores).
-    target_link_libraries(everyone_overlay PRIVATE -static-libgcc -static-libstdc++ user32 gdi32 dwmapi)
+    # Ship a self-contained DLL: no mingw C++ runtime or thread-runtime DLLs,
+    # and link the Win32 imports that imgui_impl_win32 needs (MSVC gets those
+    # via `#pragma comment(lib)` which lld/mingw ignores).
+    # `-static` matters for nixpkgs' mingw-w64, which links its mcfgthread
+    # runtime dynamically by default (libmcfgthread-2.dll) unlike llvm-mingw.
+    target_link_libraries(everyone_overlay PRIVATE -static user32 gdi32 dwmapi)
 endif()
 
 if(${INGAMEOVERLAY_BUILD_TESTS})

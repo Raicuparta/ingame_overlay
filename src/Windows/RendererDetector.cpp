@@ -18,6 +18,7 @@
  */
 
 #include <cassert>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <string_view>

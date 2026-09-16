@@ -70,7 +70,11 @@ SYSTEM_HIDE_API(std::string, SYSTEM_CALL_DEFAULT) ExpandSymlink(std::string file
             name_len *= 2;
             link_target.resize(name_len);
             name_len = readlink(file_path.c_str(), &link_target[0], link_target.length());
-        } while (name_len == link_target.length());
+            if (name_len < 0)
+            { // Can't read the link (racing map_files entry, permission, ...).
+                return file_path;
+            }
+        } while (name_len == static_cast<ssize_t>(link_target.length()));
         link_target.resize(name_len);
         file_path = std::move(link_target);
     }
