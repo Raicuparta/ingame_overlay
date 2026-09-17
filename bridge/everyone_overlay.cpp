@@ -35,7 +35,7 @@
 
 // Forward declaration so the optional auto-start below can call the real
 // exported entry point.
-extern "C" int everyone_overlay_start();
+EVERYONE_OVERLAY_EXPORT int everyone_overlay_start();
 
 namespace
 {

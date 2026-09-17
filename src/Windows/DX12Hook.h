@@ -130,6 +130,12 @@ private:
     int _CommandQueueOffsetRetries;
     size_t _CommandQueueOffset;
     ID3D12CommandQueue* _CommandQueue;
+    // Proton (and some other wrappers) hide the real swapchain behind a
+    // pointer on the game's swapchain, so the command queue has to be read one
+    // level deeper. See _FindCommandQueueFromSwapChain.
+    bool _UsingWrappedSwapchain;
+    size_t _WrappedSwapchainOffset;
+    bool _CommandQueueLookupGaveUp;
     ID3D12Device* _Device;
     ULONG _HookDeviceRefCount;
     OverlayHookState _HookState;
@@ -160,6 +166,8 @@ private:
     void _ReleaseShaderRessourceView(uint32_t id);
 
     ID3D12CommandQueue* _FindCommandQueueFromSwapChain(IDXGISwapChain* pSwapChain);
+    bool _ScanForCommandQueue(const void* object, size_t* outOffset);
+    ID3D12CommandQueue* _ResolveCommandQueue(IDXGISwapChain* pSwapChain);
 
     void _UpdateHookDeviceRefCount();
     bool _CreateRenderTargets(IDXGISwapChain* pSwapChain);

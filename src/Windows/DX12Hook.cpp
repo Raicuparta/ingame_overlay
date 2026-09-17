@@ -24,7 +24,32 @@
 #include <imgui_internal.h>
 #include <backends/imgui_impl_dx12.h>
 
+#include <cstring>
+
 namespace InGameOverlay {
+
+// The hook members (e.g. _IDXGISwapChainPresent) are declared as member
+// function pointers, but are actually filled with plain function addresses read
+// from the renderer vtables (see RendererDetector). Invoke them as plain
+// functions: member-pointer call syntax makes the compiler treat the low bit of
+// the address as a vtable index and dispatch through _this, which crashes under
+// wrappers like Wine/Proton. This mirrors the DX11 hook.
+template<typename Fn>
+static Fn ReadAsFunctionPointer(void const* memberPtr)
+{
+    static_assert(sizeof(Fn) == sizeof(void*), "expected a plain function pointer");
+    Fn fn;
+    std::memcpy(&fn, memberPtr, sizeof(fn));
+    return fn;
+}
+
+using D3D12DeviceReleaseFn = ULONG(STDMETHODCALLTYPE*)(IUnknown*);
+using DXGISwapChainPresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
+using DXGISwapChainResizeBuffersFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+using DXGISwapChainResizeTargetFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, const DXGI_MODE_DESC*);
+using DXGISwapChain1Present1Fn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
+using DXGISwapChain3ResizeBuffers1Fn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain3*, UINT, UINT, UINT, DXGI_FORMAT, UINT, const UINT*, IUnknown* const*);
+using D3D12CommandQueueExecuteCommandListsFn = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 
 struct DX12Texture_t : RendererTexture_t {
     D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = {};
@@ -204,42 +229,95 @@ void DX12Hook_t::_ReleaseShaderRessourceView(uint32_t id)
 ID3D12CommandQueue* DX12Hook_t::_FindCommandQueueFromSwapChain(IDXGISwapChain* pSwapChain)
 {
     constexpr int MaxRetries = 10;
-    ID3D12CommandQueue* pCommandQueue = nullptr;
-    ID3D12CommandQueue* pHookedCommandQueue = _CommandQueue;
 
-    if (pHookedCommandQueue == nullptr)
+    if (_CommandQueue == nullptr)
         return nullptr;
 
-    if (_CommandQueueOffset == 0)
-    {
-        for (size_t i = 0; i < 1024; ++i)
-        {
-            if (*reinterpret_cast<ID3D12CommandQueue**>(reinterpret_cast<uintptr_t>(pSwapChain) + i) == pHookedCommandQueue)
-            {
-                INGAMEOVERLAY_INFO("Found IDXGISwapChain::ppCommandQueue at offset {}.", i);
-                _CommandQueueOffset = i;
-                break;
-            }
-        }
-    }
-
     if (_CommandQueueOffset != 0)
+        return _ResolveCommandQueue(pSwapChain);
+
+    if (_CommandQueueLookupGaveUp)
+        return _CommandQueue;
+
+    // Usual case: the command queue pointer lives directly on the swapchain.
+    if (_ScanForCommandQueue(pSwapChain, &_CommandQueueOffset))
+        return _ResolveCommandQueue(pSwapChain);
+
+    // Wrapped swapchain (Proton and similar): the real swapchain is behind a
+    // pointer, so the command queue is one level deeper. This mirrors UEVR's
+    // Proton scan.
+    constexpr size_t ScanSize = 512 * sizeof(void*);
+    for (size_t offset = 0; offset < ScanSize; offset += sizeof(void*))
     {
-        pCommandQueue = *reinterpret_cast<ID3D12CommandQueue**>(reinterpret_cast<uintptr_t>(pSwapChain) + _CommandQueueOffset);
-    }
-    else if (_CommandQueueOffsetRetries <= MaxRetries)
-    {
-        if (++_CommandQueueOffsetRetries >= MaxRetries)
+        const void* address = reinterpret_cast<const uint8_t*>(pSwapChain) + offset;
+        if (IsBadReadPtr(address, sizeof(void*)))
+            break;
+
+        const void* wrapped = *reinterpret_cast<void* const*>(address);
+        if (wrapped == nullptr || IsBadReadPtr(wrapped, sizeof(void*)))
+            continue;
+
+        size_t commandQueueOffset = 0;
+        if (_ScanForCommandQueue(wrapped, &commandQueueOffset))
         {
-            INGAMEOVERLAY_INFO("Failed to find IDXGISwapChain::ppCommandQueue, fallback to ID3D12CommandQueue::ExecuteCommandLists");
+            INGAMEOVERLAY_INFO("Found wrapped swapchain at offset {} with command queue at offset {}.", offset, commandQueueOffset);
+            _UsingWrappedSwapchain = true;
+            _WrappedSwapchainOffset = offset;
+            _CommandQueueOffset = commandQueueOffset;
+            return _ResolveCommandQueue(pSwapChain);
         }
     }
-    else
+
+    if (++_CommandQueueOffsetRetries >= MaxRetries)
     {
-        pCommandQueue = pHookedCommandQueue;
+        INGAMEOVERLAY_INFO("Failed to find IDXGISwapChain command queue, using hooked direct queue.");
+        _CommandQueueLookupGaveUp = true;
     }
 
-    return pCommandQueue;
+    return _CommandQueue;
+}
+
+bool DX12Hook_t::_ScanForCommandQueue(const void* object, size_t* outOffset)
+{
+    constexpr size_t ScanSize = 512 * sizeof(void*);
+
+    for (size_t offset = 0; offset < ScanSize; offset += sizeof(void*))
+    {
+        const void* address = reinterpret_cast<const uint8_t*>(object) + offset;
+        if (IsBadReadPtr(address, sizeof(void*)))
+            return false;
+
+        if (*reinterpret_cast<void* const*>(address) == _CommandQueue)
+        {
+            *outOffset = offset;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+ID3D12CommandQueue* DX12Hook_t::_ResolveCommandQueue(IDXGISwapChain* pSwapChain)
+{
+    const void* object = pSwapChain;
+
+    if (_UsingWrappedSwapchain)
+    {
+        const void* wrappedAddress = reinterpret_cast<const uint8_t*>(object) + _WrappedSwapchainOffset;
+        if (IsBadReadPtr(wrappedAddress, sizeof(void*)))
+            return _CommandQueue;
+
+        object = *reinterpret_cast<void* const*>(wrappedAddress);
+        if (object == nullptr)
+            return _CommandQueue;
+    }
+
+    const void* queueAddress = reinterpret_cast<const uint8_t*>(object) + _CommandQueueOffset;
+    if (IsBadReadPtr(queueAddress, sizeof(void*)))
+        return _CommandQueue;
+
+    ID3D12CommandQueue* queue = *reinterpret_cast<ID3D12CommandQueue* const*>(queueAddress);
+    return queue != nullptr ? queue : _CommandQueue;
 }
 
 void DX12Hook_t::_UpdateHookDeviceRefCount()
@@ -436,6 +514,9 @@ void DX12Hook_t::_ResetRenderState(OverlayHookState state)
             _CommandQueueOffset = 0;
             _CommandQueueOffsetRetries = 0;
             _CommandQueue = nullptr;
+            _UsingWrappedSwapchain = false;
+            _WrappedSwapchainOffset = 0;
+            _CommandQueueLookupGaveUp = false;
             break;
 
         case OverlayHookState::Reset:
@@ -950,7 +1031,7 @@ cleanup:
 ULONG STDMETHODCALLTYPE DX12Hook_t::_MyID3D12DeviceRelease(IUnknown* _this)
 {
     auto inst = DX12Hook_t::Inst();
-    auto result = (_this->*inst->_ID3D12DeviceRelease)();
+    auto result = ReadAsFunctionPointer<D3D12DeviceReleaseFn>(&inst->_ID3D12DeviceRelease)(_this);
 
     if (_this == inst->_Device)
     {
@@ -972,7 +1053,7 @@ HRESULT STDMETHODCALLTYPE DX12Hook_t::_MyIDXGISwapChainPresent(IDXGISwapChain *_
     if (pCommandQueue != nullptr)
         inst->_PrepareForOverlay(_this, pCommandQueue, Flags);
 
-    return (_this->*inst->_IDXGISwapChainPresent)(SyncInterval, Flags);
+    return ReadAsFunctionPointer<DXGISwapChainPresentFn>(&inst->_IDXGISwapChainPresent)(_this, SyncInterval, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE DX12Hook_t::_MyIDXGISwapChainResizeBuffers(IDXGISwapChain* _this, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
@@ -986,7 +1067,7 @@ HRESULT STDMETHODCALLTYPE DX12Hook_t::_MyIDXGISwapChainResizeBuffers(IDXGISwapCh
         createRenderTargets = true;
         inst->_ResetRenderState(OverlayHookState::Reset);
     }
-    auto r = (_this->*inst->_IDXGISwapChainResizeBuffers)(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    auto r = ReadAsFunctionPointer<DXGISwapChainResizeBuffersFn>(&inst->_IDXGISwapChainResizeBuffers)(_this, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     if (createRenderTargets)
     {
         inst->_ResetRenderState(inst->_CreateRenderTargets(_this)
@@ -1008,7 +1089,7 @@ HRESULT STDMETHODCALLTYPE DX12Hook_t::_MyIDXGISwapChainResizeTarget(IDXGISwapCha
         createRenderTargets = true;
         inst->_ResetRenderState(OverlayHookState::Reset);
     }
-    auto r = (_this->*inst->_IDXGISwapChainResizeTarget)(pNewTargetParameters);
+    auto r = ReadAsFunctionPointer<DXGISwapChainResizeTargetFn>(&inst->_IDXGISwapChainResizeTarget)(_this, pNewTargetParameters);
     if (createRenderTargets)
     {
         inst->_ResetRenderState(inst->_CreateRenderTargets(_this)
@@ -1028,7 +1109,7 @@ HRESULT STDMETHODCALLTYPE DX12Hook_t::_MyIDXGISwapChain1Present1(IDXGISwapChain1
     if (pCommandQueue != nullptr)
         inst->_PrepareForOverlay(_this, pCommandQueue, Flags);
 
-    return (_this->*inst->_IDXGISwapChain1Present1)(SyncInterval, Flags, pPresentParameters);
+    return ReadAsFunctionPointer<DXGISwapChain1Present1Fn>(&inst->_IDXGISwapChain1Present1)(_this, SyncInterval, Flags, pPresentParameters);
 }
 
 HRESULT STDMETHODCALLTYPE DX12Hook_t::_MyIDXGISwapChain3ResizeBuffers1(IDXGISwapChain3* _this, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)
@@ -1042,7 +1123,7 @@ HRESULT STDMETHODCALLTYPE DX12Hook_t::_MyIDXGISwapChain3ResizeBuffers1(IDXGISwap
         createRenderTargets = true;
         inst->_ResetRenderState(OverlayHookState::Reset);
     }
-    auto r = (_this->*inst->_IDXGISwapChain3ResizeBuffers1)(BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
+    auto r = ReadAsFunctionPointer<DXGISwapChain3ResizeBuffers1Fn>(&inst->_IDXGISwapChain3ResizeBuffers1)(_this, BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     if (createRenderTargets)
     {
         inst->_ResetRenderState(inst->_CreateRenderTargets(_this)
@@ -1060,7 +1141,7 @@ void STDMETHODCALLTYPE DX12Hook_t::_MyID3D12CommandQueueExecuteCommandLists(ID3D
     if (_this->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT)
         inst->_CommandQueue = _this;
 
-    (_this->*inst->_ID3D12CommandQueueExecuteCommandLists)(NumCommandLists, ppCommandLists);
+    ReadAsFunctionPointer<D3D12CommandQueueExecuteCommandListsFn>(&inst->_ID3D12CommandQueueExecuteCommandLists)(_this, NumCommandLists, ppCommandLists);
 }
 
 DX12Hook_t::DX12Hook_t():
@@ -1070,6 +1151,9 @@ DX12Hook_t::DX12Hook_t():
     _CommandQueueOffsetRetries(0),
     _CommandQueueOffset(0),
     _CommandQueue(nullptr),
+    _UsingWrappedSwapchain(false),
+    _WrappedSwapchainOffset(0),
+    _CommandQueueLookupGaveUp(false),
     _Device(nullptr),
     _HookDeviceRefCount(0),
     _HookState(OverlayHookState::Removing),
