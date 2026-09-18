@@ -51,7 +51,13 @@ namespace
 
     InGameOverlay::RendererHook_t* g_renderer = nullptr;
 
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+    // Diagnostic build: start hidden so corruption from the hook itself can be
+    // told apart from corruption caused by the ImGui draw. F2 shows it.
+    bool g_visible = false;
+#else
     bool g_visible = true;
+#endif
     std::string g_text = "hello world";
 
     // Text scale factor, set from the C# side via everyone_overlay_set_text_scale.
@@ -119,6 +125,7 @@ namespace
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_visible = !g_visible;
+        DebugLog("[everyone-overlay] toggled: visible=%d", g_visible ? 1 : 0);
 
         // Keep the overlay passive regardless of visibility.
         if (g_renderer != nullptr)

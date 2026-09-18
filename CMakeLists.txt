@@ -122,6 +122,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(INGAMEOVERLAY_DYNAMIC_RUNTIME "Link against dynamic runtime (Windows)" ON)
 option(INGAMEOVERLAY_BUILD_TESTS "Build tests." OFF)
 option(INGAMEOVERLAY_USE_SPDLOG "Enable logs with SPDLOG." OFF)
+option(EVERYONE_OVERLAY_DEBUG_LOG "Route overlay diagnostics to a log file (and add per-frame renderer probes). For debugging the Everyone client overlay." OFF)
 option(INGAMEOVERLAY_USE_SYSTEM_LIBRARIES "Use system libraries instead of building them from deps" OFF)
 
 if(WIN32)
@@ -261,6 +262,7 @@ target_include_directories(ingame_overlay
 target_compile_definitions(ingame_overlay
   PRIVATE
   IMGUI_DISABLE_WIN32_DEFAULT_IME_FUNCTIONS
+  $<$<BOOL:${EVERYONE_OVERLAY_DEBUG_LOG}>:EVERYONE_OVERLAY_DEBUG_LOG>
   $<$<BOOL:${INGAMEOVERLAY_USE_SPDLOG}>:INGAMEOVERLAY_USE_SPDLOG>
   $<BUILD_INTERFACE:${IMGUI_USER_CONFIG_VALUE}>
   $<BUILD_INTERFACE:IMGUI_DISABLE_DEMO_WINDOWS>
@@ -280,42 +282,87 @@ set_target_properties(ingame_overlay PROPERTIES EXPORT_NAME InGameOverlay)
 #############################
 ## Everyone overlay bridge
 #############################
-add_library(everyone_overlay SHARED
-    bridge/everyone_overlay.cpp
-    bridge/gdextension_entry.cpp
-    bridge/debug_log.cpp
-)
+option(EVERYONE_OVERLAY_EMBEDDED "Build the everyone bridge as a static library for embedding in a host library (e.g. the Rust client)" OFF)
 
-target_link_libraries(everyone_overlay
-    PRIVATE
-    Nemirtingas::InGameOverlay
-    Threads::Threads
-)
+if(EVERYONE_OVERLAY_EMBEDDED)
+    # Static variant linked into a host shared library. Its entry points are
+    # renamed with an `ig_overlay_` prefix so the host can re-export
+    # `everyone_overlay_*` wrappers without a symbol clash. The host (the Rust
+    # everyone-client library) owns the engine entry points; this target is
+    # rendering only.
+    add_library(everyone_overlay_embedded STATIC
+        bridge/everyone_overlay.cpp
+        bridge/debug_log.cpp
+    )
 
-# Keep imgui.h configuration consistent with the ingame_overlay build.
-target_compile_definitions(everyone_overlay PRIVATE
-    IMGUI_DISABLE_OBSOLETE_KEYIO
-    IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-    IMGUI_DISABLE_APPLE_GAMEPAD
-)
+    target_link_libraries(everyone_overlay_embedded
+        PRIVATE
+        Nemirtingas::InGameOverlay
+        Threads::Threads
+    )
 
-set_target_properties(everyone_overlay PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
-    C_VISIBILITY_PRESET hidden
-    CXX_VISIBILITY_PRESET hidden
-    VISIBILITY_INLINES_HIDDEN ON
-)
+    # Keep imgui.h configuration consistent with the ingame_overlay build.
+    target_compile_definitions(everyone_overlay_embedded PRIVATE
+        IMGUI_DISABLE_OBSOLETE_KEYIO
+        IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+        IMGUI_DISABLE_APPLE_GAMEPAD
+        $<$<BOOL:${EVERYONE_OVERLAY_DEBUG_LOG}>:EVERYONE_OVERLAY_DEBUG_LOG>
+        everyone_overlay_start=ig_overlay_start
+        everyone_overlay_stop=ig_overlay_stop
+        everyone_overlay_is_ready=ig_overlay_is_ready
+        everyone_overlay_set_text=ig_overlay_set_text
+        everyone_overlay_set_text_scale=ig_overlay_set_text_scale
+    )
 
-if(WIN32)
-    # Windows convention: everyone_overlay.dll (no "lib" prefix).
-    set_target_properties(everyone_overlay PROPERTIES PREFIX "")
+    set_target_properties(everyone_overlay_embedded PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+    )
 
-    # Ship a self-contained DLL: no mingw C++ runtime or thread-runtime DLLs,
-    # and link the Win32 imports that imgui_impl_win32 needs (MSVC gets those
-    # via `#pragma comment(lib)` which lld/mingw ignores).
-    # `-static` matters for nixpkgs' mingw-w64, which links its mcfgthread
-    # runtime dynamically by default (libmcfgthread-2.dll) unlike llvm-mingw.
-    target_link_libraries(everyone_overlay PRIVATE -static user32 gdi32 dwmapi)
+    if(WIN32)
+        # ImGui's Win32 backend needs these; MSVC gets them via `#pragma
+        # comment(lib)` which lld/mingw ignores.
+        target_link_libraries(everyone_overlay_embedded PRIVATE user32 gdi32 dwmapi)
+    endif()
+else()
+    add_library(everyone_overlay SHARED
+        bridge/everyone_overlay.cpp
+        bridge/debug_log.cpp
+    )
+
+    target_link_libraries(everyone_overlay
+        PRIVATE
+        Nemirtingas::InGameOverlay
+        Threads::Threads
+    )
+
+    # Keep imgui.h configuration consistent with the ingame_overlay build.
+    target_compile_definitions(everyone_overlay PRIVATE
+        IMGUI_DISABLE_OBSOLETE_KEYIO
+        IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+        IMGUI_DISABLE_APPLE_GAMEPAD
+    )
+
+    set_target_properties(everyone_overlay PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+    )
+
+    if(WIN32)
+        # Windows convention: everyone_overlay.dll (no "lib" prefix).
+        set_target_properties(everyone_overlay PROPERTIES PREFIX "")
+
+        # Ship a self-contained DLL: no mingw C++ runtime or thread-runtime DLLs,
+        # and link the Win32 imports that imgui_impl_win32 needs (MSVC gets those
+        # via `#pragma comment(lib)` which lld/mingw ignores).
+        # `-static` matters for nixpkgs' mingw-w64, which links its mcfgthread
+        # runtime dynamically by default (libmcfgthread-2.dll) unlike llvm-mingw.
+        target_link_libraries(everyone_overlay PRIVATE -static user32 gdi32 dwmapi)
+    endif()
 endif()
 
 if(${INGAMEOVERLAY_BUILD_TESTS})

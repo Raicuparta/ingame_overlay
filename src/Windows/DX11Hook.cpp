@@ -26,6 +26,10 @@
 #include <imgui_internal.h>
 #include <backends/imgui_impl_dx11.h>
 
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+#include "../../bridge/debug_log.h"
+#endif
+
 namespace InGameOverlay {
 
 #define TRY_HOOK_FUNCTION(NAME) do { if (!HookFunc(std::make_pair<void**, void*>(&(void*&)_##NAME, (void*)&DX11Hook_t::_My##NAME))) { \
@@ -197,6 +201,16 @@ bool DX11Hook_t::_CreateRenderTargets(IDXGISwapChain* pSwapChain)
     if (!SUCCEEDED(_Device->CreateRenderTargetView(pBackBuffer, nullptr, &pRenderTargetView)) || pRenderTargetView == nullptr)
         result = false;
 
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+    {
+        D3D11_TEXTURE2D_DESC texDesc{};
+        pBackBuffer->GetDesc(&texDesc);
+        DebugLog("[everyone-overlay][dx11] _CreateRenderTargets: backbuffer %ux%u format=%d samples=%u rtv=%p result=%d",
+            texDesc.Width, texDesc.Height, static_cast<int>(texDesc.Format), texDesc.SampleDesc.Count,
+            static_cast<void*>(pRenderTargetView), result ? 1 : 0);
+    }
+#endif
+
     // This code works on some apps and doesn't on others,
     // while always getting the first buffer seems to be more reliable, comment it for now.
     //ID3D11RenderTargetView* targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
@@ -228,6 +242,9 @@ bool DX11Hook_t::_CreateRenderTargets(IDXGISwapChain* pSwapChain)
 
 void DX11Hook_t::_DestroyRenderTargets()
 {
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+    DebugLog("[everyone-overlay][dx11] _DestroyRenderTargets: rtv=%p", static_cast<void*>(_RenderTargetView));
+#endif
     SafeRelease(_RenderTargetView);
 }
 
@@ -235,6 +252,10 @@ void DX11Hook_t::_ResetRenderState(OverlayHookState state)
 {
     if (_HookState == state)
         return;
+
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+    DebugLog("[everyone-overlay][dx11] state %d -> %d", static_cast<int>(_HookState), static_cast<int>(state));
+#endif
 
     if (state == OverlayHookState::Removing)
         ++_DeviceReleasing;
@@ -266,6 +287,54 @@ void DX11Hook_t::_ResetRenderState(OverlayHookState state)
         --_DeviceReleasing;
 }
 
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+// Probe whether the game has the swapchain backbuffer bound as a shader
+// resource at Present time. Binding it as an RTV while it is also an SRV is a
+// D3D11 hazard that can produce persistent corruption.
+static void DX11LogFrameProbe(ID3D11DeviceContext* ctx, IDXGISwapChain* pSwapChain, uint64_t frame)
+{
+    ID3D11Texture2D* backBuffer = nullptr;
+    if (FAILED(pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))) || backBuffer == nullptr)
+        return;
+
+    auto isBackBuffer = [backBuffer](IUnknown* resource) -> bool
+    {
+        if (resource == nullptr)
+            return false;
+        ID3D11Resource* res = nullptr;
+        bool match = false;
+        if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&res))) && res != nullptr)
+        {
+            match = (res == static_cast<ID3D11Resource*>(backBuffer));
+            res->Release();
+        }
+        return match;
+    };
+
+    constexpr UINT slotCount = 4;
+    ID3D11ShaderResourceView* srvs[slotCount] = {};
+    bool boundAsSrv = false;
+
+    ctx->PSGetShaderResources(0, slotCount, srvs);
+    for (auto* srv : srvs) { boundAsSrv |= isBackBuffer(srv); }
+    for (auto*& srv : srvs) { if (srv) { srv->Release(); srv = nullptr; } }
+
+    ctx->VSGetShaderResources(0, slotCount, srvs);
+    for (auto* srv : srvs) { boundAsSrv |= isBackBuffer(srv); }
+    for (auto*& srv : srvs) { if (srv) { srv->Release(); srv = nullptr; } }
+
+    ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+    ctx->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, nullptr);
+    int boundTargets = 0;
+    for (auto* rtv : rtvs) { if (rtv) { ++boundTargets; rtv->Release(); } }
+
+    DebugLog("[everyone-overlay][dx11] frame %llu: backbuffer bound as SRV=%d, game RTs bound=%d",
+        static_cast<unsigned long long>(frame), boundAsSrv ? 1 : 0, boundTargets);
+
+    backBuffer->Release();
+}
+#endif
+
 // Try to make this function and overlay's proc as short as possible or it might affect game's fps.
 void DX11Hook_t::_PrepareForOverlay(IDXGISwapChain* pSwapChain, UINT flags)
 {
@@ -274,6 +343,18 @@ void DX11Hook_t::_PrepareForOverlay(IDXGISwapChain* pSwapChain, UINT flags)
 
     DXGI_SWAP_CHAIN_DESC desc;
     pSwapChain->GetDesc(&desc);
+
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+    if (_CurrentFrame < 5)
+    {
+        DebugLog("[everyone-overlay][dx11] present: buffers=%u %ux%u fmt=%d samples=%u swapeffect=%d windowed=%d hwnd=%p device=%p ctx=%p state=%d",
+            desc.BufferCount, desc.BufferDesc.Width, desc.BufferDesc.Height,
+            static_cast<int>(desc.BufferDesc.Format), desc.SampleDesc.Count,
+            static_cast<int>(desc.SwapEffect), desc.Windowed ? 1 : 0,
+            static_cast<void*>(desc.OutputWindow), static_cast<void*>(_Device),
+            static_cast<void*>(_DeviceContext), static_cast<int>(_HookState));
+    }
+#endif
 
     if (_HookState == OverlayHookState::Removing)
     {
@@ -291,6 +372,9 @@ void DX11Hook_t::_PrepareForOverlay(IDXGISwapChain* pSwapChain, UINT flags)
             ImGui::CreateContext(reinterpret_cast<ImFontAtlas*>(_ImGuiFontAtlas));
 
         ImGui_ImplDX11_Init(_Device, _DeviceContext);
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+        DebugLog("[everyone-overlay][dx11] ImGui_ImplDX11_Init done, featureLevel=0x%x", static_cast<unsigned>(_Device->GetFeatureLevel()));
+#endif
 
         WindowsHook_t::Inst()->SetInitialWindowSize(desc.OutputWindow);
 
@@ -328,8 +412,53 @@ void DX11Hook_t::_PrepareForOverlay(IDXGISwapChain* pSwapChain, UINT flags)
 
         ImGui::Render();
 
-        _DeviceContext->OMSetRenderTargets(1, &_RenderTargetView, NULL);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        ImDrawData* drawData = ImGui::GetDrawData();
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+        if (_CurrentFrame <= 30)
+        {
+            DebugLog("[everyone-overlay][dx11] frame %llu draw: cmdLists=%d vtx=%d idx=%d rtv=%p",
+                static_cast<unsigned long long>(_CurrentFrame),
+                drawData ? drawData->CmdLists.Size : -1,
+                drawData ? drawData->TotalVtxCount : -1,
+                drawData ? drawData->TotalIdxCount : -1,
+                static_cast<void*>(_RenderTargetView));
+        }
+        if (_CurrentFrame <= 10)
+            DX11LogFrameProbe(_DeviceContext, pSwapChain, _CurrentFrame);
+#endif
+
+        // Only touch the device when there is actually something to draw. This
+        // keeps a hidden overlay completely inert (no render target bind, no
+        // ImGui draw), which also makes it useful as a diagnostic: corruption
+        // while hidden points at the hook itself, not the drawing.
+        if (drawData != nullptr && drawData->CmdLists.Size > 0)
+        {
+            // ImGui's DX11 backend restores viewport/scissor/shaders/blend/depth
+            // state, but deliberately not the render targets. Engines cache OM
+            // state, so leaving our backbuffer RTV + null depth bound desyncs
+            // that cache and breaks the game's later passes (seen as a whole
+            // layer disappearing in 140). Save and restore it around the draw.
+            ID3D11RenderTargetView* savedRtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+            ID3D11DepthStencilView* savedDsv = nullptr;
+            _DeviceContext->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRtvs, &savedDsv);
+
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+            if (_CurrentFrame <= 30)
+            {
+                int savedCount = 0;
+                for (auto* rtv : savedRtvs) { if (rtv) ++savedCount; }
+                DebugLog("[everyone-overlay][dx11] frame %llu omstate: saving game RTs=%d dsv=%d",
+                    static_cast<unsigned long long>(_CurrentFrame), savedCount, savedDsv != nullptr ? 1 : 0);
+            }
+#endif
+
+            _DeviceContext->OMSetRenderTargets(1, &_RenderTargetView, NULL);
+            ImGui_ImplDX11_RenderDrawData(drawData);
+
+            _DeviceContext->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRtvs, savedDsv);
+            for (auto* rtv : savedRtvs) { if (rtv) rtv->Release(); }
+            if (savedDsv) savedDsv->Release();
+        }
 
         if (screenshotType == ScreenshotType_t::AfterOverlay)
             _HandleScreenshot(pSwapChain);
@@ -486,6 +615,10 @@ ULONG STDMETHODCALLTYPE DX11Hook_t::_MyID3D11DeviceRelease(ID3D11Device* _this)
     if (_this == inst->_Device)
     {
         INGAMEOVERLAY_INFO("ID3D11Device::Release: RefCount = {}, Our removal threshold = {}", result, inst->_HookDeviceRefCount);
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+        DebugLog("[everyone-overlay][dx11] device Release: refCount=%lu threshold=%lu",
+            static_cast<unsigned long>(result), static_cast<unsigned long>(inst->_HookDeviceRefCount));
+#endif
 
         if (inst->_DeviceReleasing == 0 && result <= inst->_HookDeviceRefCount)
             inst->_ResetRenderState(OverlayHookState::Removing);
@@ -527,6 +660,10 @@ HRESULT STDMETHODCALLTYPE DX11Hook_t::_MyIDXGISwapChainResizeBuffers(IDXGISwapCh
     auto inst = DX11Hook_t::Inst();
     auto createRenderTargets = false;
 
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+    DebugLog("[everyone-overlay][dx11] ResizeBuffers: buffers=%u %ux%u fmt=%d flags=0x%x state=%d",
+        BufferCount, Width, Height, static_cast<int>(NewFormat), SwapChainFlags, static_cast<int>(inst->_HookState));
+#endif
     if (inst->_Device != nullptr && inst->_HookState != OverlayHookState::Removing)
     {
         createRenderTargets = true;
@@ -549,6 +686,12 @@ HRESULT STDMETHODCALLTYPE DX11Hook_t::_MyIDXGISwapChainResizeTarget(IDXGISwapCha
     auto inst = DX11Hook_t::Inst();
     auto createRenderTargets = false;
 
+#ifdef EVERYONE_OVERLAY_DEBUG_LOG
+    if (pNewTargetParameters != nullptr)
+        DebugLog("[everyone-overlay][dx11] ResizeTarget: %ux%u fmt=%d state=%d",
+            pNewTargetParameters->Width, pNewTargetParameters->Height,
+            static_cast<int>(pNewTargetParameters->Format), static_cast<int>(inst->_HookState));
+#endif
     if (inst->_Device != nullptr && inst->_HookState != OverlayHookState::Removing)
     {
         createRenderTargets = true;
