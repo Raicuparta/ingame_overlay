@@ -607,10 +607,26 @@ cleanup:
         _SendScreenshot(nullptr);
 }
 
+// The hook members are declared as member function pointers, but are actually
+// filled with plain function addresses read from the swapchain/device vtable
+// (see GetDXGIFunctions). Invoke them as plain functions: member-pointer call
+// semantics would misinterpret the low bit of the address as a vtable index
+// and crash (seen on Wine/Proton, and with MiniDetour trampolines generally).
+template<typename Fn>
+static Fn ReadAsFunctionPointer(void const* memberPtr)
+{
+    static_assert(sizeof(Fn) == sizeof(void*), "expected a plain function pointer");
+    Fn fn;
+    std::memcpy(&fn, memberPtr, sizeof(fn));
+    return fn;
+}
+
+using ID3D11DeviceReleaseFn = ULONG(STDMETHODCALLTYPE*)(ID3D11Device*);
+
 ULONG STDMETHODCALLTYPE DX11Hook_t::_MyID3D11DeviceRelease(ID3D11Device* _this)
 {
     auto inst = DX11Hook_t::Inst();
-    auto result = (_this->*inst->_ID3D11DeviceRelease)();
+    auto result = ReadAsFunctionPointer<ID3D11DeviceReleaseFn>(&inst->_ID3D11DeviceRelease)(_this);
 
     if (_this == inst->_Device)
     {
@@ -625,20 +641,6 @@ ULONG STDMETHODCALLTYPE DX11Hook_t::_MyID3D11DeviceRelease(ID3D11Device* _this)
     }
 
     return result;
-}
-
-// The hook members (e.g. _IDXGISwapChainPresent) are declared as member
-// function pointers, but are actually filled with plain function addresses
-// read from the swapchain vtable (see GetDXGIFunctions). Invoke them as
-// plain functions: member-pointer call semantics would misinterpret the
-// low bit of the address as a vtable index and crash (seen on Wine/Proton).
-template<typename Fn>
-static Fn ReadAsFunctionPointer(void const* memberPtr)
-{
-    static_assert(sizeof(Fn) == sizeof(void*), "expected a plain function pointer");
-    Fn fn;
-    std::memcpy(&fn, memberPtr, sizeof(fn));
-    return fn;
 }
 
 using IDXGISwapChainPresentFn    = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);

@@ -1111,7 +1111,9 @@ private:
     }
 
     // Same as DX11Hook_t: the member-pointer fields are filled with plain
-    // function addresses from the swapchain vtable; call them directly.
+    // function addresses from the device/swapchain vtable; call them directly.
+    // Member-pointer call semantics misinterpret the low bit as a vtable index
+    // on 32-bit Wine/Proton and crash.
     template<typename Fn>
     static Fn ReadAsFunctionPointer(void const* memberPtr)
     {
@@ -1163,7 +1165,7 @@ private:
         std::lock_guard<std::recursive_mutex> lk(inst->_RendererMutex);
 
         INGAMEOVERLAY_INFO("IDirect3DDevice9::Present");
-        auto res = (_this->*inst->_IDirect3DDevice9Present)(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+        auto res = ReadAsFunctionPointer<HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*)>(&inst->_IDirect3DDevice9Present)(_this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
         if (!inst->_DetectionStarted || inst->_DetectionDone)
             return res;
 
@@ -1188,7 +1190,7 @@ private:
         std::lock_guard<std::recursive_mutex> lk(inst->_RendererMutex);
 
         INGAMEOVERLAY_INFO("IDirect3DDevice9Ex::PresentEx");
-        auto res = (_this->*inst->_IDirect3DDevice9ExPresentEx)(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+        auto res = ReadAsFunctionPointer<HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9Ex*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*, DWORD)>(&inst->_IDirect3DDevice9ExPresentEx)(_this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
         if (!inst->_DetectionStarted || inst->_DetectionDone)
             return res;
 
@@ -1213,7 +1215,7 @@ private:
         std::lock_guard<std::recursive_mutex> lk(inst->_RendererMutex);
 
         INGAMEOVERLAY_INFO("IDirect3DSwapChain9::Present");
-        auto res = (_this->*inst->_IDirect3DSwapChain9Present)(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+        auto res = ReadAsFunctionPointer<HRESULT(STDMETHODCALLTYPE*)(IDirect3DSwapChain9*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*, DWORD)>(&inst->_IDirect3DSwapChain9Present)(_this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
         if (!inst->_DetectionStarted || inst->_DetectionDone)
             return res;
 

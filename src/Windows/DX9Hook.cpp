@@ -20,11 +20,34 @@
 #include "DX9Hook.h"
 #include "WindowsHook.h"
 
+#include <cstring>
+
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <backends/imgui_impl_dx9.h>
 
 namespace InGameOverlay {
+
+// The hook members are declared as member function pointers, but LoadFunctions
+// stores plain function addresses read from the device vtable. Invoke them as
+// plain functions: member-pointer call semantics misinterpret the low bit of
+// the address as a vtable index on 32-bit (crashes under Wine/Proton, and
+// potentially on Windows too).
+template<typename Fn>
+static Fn ReadAsFunctionPointer(void const* memberPtr)
+{
+    static_assert(sizeof(Fn) == sizeof(void*), "expected a plain function pointer");
+    Fn fn;
+    std::memcpy(&fn, memberPtr, sizeof(fn));
+    return fn;
+}
+
+using IDirect3DDevice9ReleaseFn    = ULONG(STDMETHODCALLTYPE*)(IDirect3DDevice9*);
+using IDirect3DDevice9ResetFn      = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
+using IDirect3DDevice9PresentFn    = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*);
+using IDirect3DDevice9ExPresentExFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9Ex*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*, DWORD);
+using IDirect3DDevice9ExResetExFn  = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9Ex*, D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*);
+using IDirect3DSwapChain9PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DSwapChain9*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*, DWORD);
 
 #define TRY_HOOK_FUNCTION(NAME) do { if (!HookFunc(std::make_pair<void**, void*>(&(void*&)_##NAME, (void*)&DX9Hook_t::_My##NAME))) { \
     INGAMEOVERLAY_ERROR("Failed to hook {}", #NAME);\
@@ -423,7 +446,7 @@ cleanup:
 ULONG STDMETHODCALLTYPE DX9Hook_t::_MyIDirect3DDevice9Release(IDirect3DDevice9* _this)
 {
     auto inst = DX9Hook_t::Inst();
-    auto result = (_this->*inst->_IDirect3DDevice9Release)();
+    auto result = ReadAsFunctionPointer<IDirect3DDevice9ReleaseFn>(&inst->_IDirect3DDevice9Release)(_this);
 
     if (_this == inst->_Device)
     {
@@ -447,7 +470,7 @@ HRESULT STDMETHODCALLTYPE DX9Hook_t::_MyIDirect3DDevice9Reset(IDirect3DDevice9* 
         createRenderTargets = true;
         inst->_ResetRenderState(OverlayHookState::Reset);
     }
-    auto r = (_this->*inst->_IDirect3DDevice9Reset)(pPresentationParameters);
+    auto r = ReadAsFunctionPointer<IDirect3DDevice9ResetFn>(&inst->_IDirect3DDevice9Reset)(_this, pPresentationParameters);
     if (createRenderTargets)
     {
         inst->_ResetRenderState(ImGui_ImplDX9_CreateDeviceObjects()
@@ -463,7 +486,7 @@ HRESULT STDMETHODCALLTYPE DX9Hook_t::_MyIDirect3DDevice9Present(IDirect3DDevice9
     INGAMEOVERLAY_INFO("IDirect3DDevice9::Present");
     auto inst = DX9Hook_t::Inst();
     inst->_PrepareForOverlay(_this, hDestWindowOverride);
-    return (_this->*inst->_IDirect3DDevice9Present)(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    return ReadAsFunctionPointer<IDirect3DDevice9PresentFn>(&inst->_IDirect3DDevice9Present)(_this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 }
 
 HRESULT STDMETHODCALLTYPE DX9Hook_t::_MyIDirect3DDevice9ExPresentEx(IDirect3DDevice9Ex* _this, CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion, DWORD dwFlags)
@@ -471,7 +494,7 @@ HRESULT STDMETHODCALLTYPE DX9Hook_t::_MyIDirect3DDevice9ExPresentEx(IDirect3DDev
     INGAMEOVERLAY_INFO("IDirect3DDevice9Ex::PresentEx");
     auto inst = DX9Hook_t::Inst();
     inst->_PrepareForOverlay(_this, hDestWindowOverride);
-    return (_this->*inst->_IDirect3DDevice9ExPresentEx)(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+    return ReadAsFunctionPointer<IDirect3DDevice9ExPresentExFn>(&inst->_IDirect3DDevice9ExPresentEx)(_this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 }
 
 HRESULT STDMETHODCALLTYPE DX9Hook_t::_MyIDirect3DDevice9ExResetEx(IDirect3DDevice9Ex* _this, D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode)
@@ -485,7 +508,7 @@ HRESULT STDMETHODCALLTYPE DX9Hook_t::_MyIDirect3DDevice9ExResetEx(IDirect3DDevic
         createRenderTargets = true;
         inst->_ResetRenderState(OverlayHookState::Reset);
     }
-    auto r = (_this->*inst->_IDirect3DDevice9ExResetEx)(pPresentationParameters, pFullscreenDisplayMode);
+    auto r = ReadAsFunctionPointer<IDirect3DDevice9ExResetExFn>(&inst->_IDirect3DDevice9ExResetEx)(_this, pPresentationParameters, pFullscreenDisplayMode);
     if (createRenderTargets)
     {
         inst->_ResetRenderState(ImGui_ImplDX9_CreateDeviceObjects()
@@ -515,7 +538,7 @@ HRESULT STDMETHODCALLTYPE DX9Hook_t::_MyIDirect3DSwapChain9SwapChainPresent(IDir
         inst->_PrepareForOverlay(pDevice, destWindow);
         pDevice->Release();
     }
-    return (_this->*inst->_IDirect3DSwapChain9SwapChainPresent)(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+    return ReadAsFunctionPointer<IDirect3DSwapChain9PresentFn>(&inst->_IDirect3DSwapChain9SwapChainPresent)(_this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 }
 
 DX9Hook_t::DX9Hook_t():

@@ -20,11 +20,32 @@
 #include "DX10Hook.h"
 #include "WindowsHook.h"
 
+#include <cstring>
+
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <backends/imgui_impl_dx10.h>
 
 namespace InGameOverlay {
+
+// Hook members store plain function addresses read from the device/swapchain
+// vtable. Invoke them as plain functions: member-pointer call semantics
+// misinterpret the low bit of the address as a vtable index and crash (the
+// trampolines MiniDetour allocates are not necessarily even).
+template<typename Fn>
+static Fn ReadAsFunctionPointer(void const* memberPtr)
+{
+    static_assert(sizeof(Fn) == sizeof(void*), "expected a plain function pointer");
+    Fn fn;
+    std::memcpy(&fn, memberPtr, sizeof(fn));
+    return fn;
+}
+
+using ID3D10DeviceReleaseFn         = ULONG(STDMETHODCALLTYPE*)(ID3D10Device*);
+using IDXGISwapChainPresentFn       = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
+using IDXGISwapChainResizeBuffersFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+using IDXGISwapChainResizeTargetFn  = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, const DXGI_MODE_DESC*);
+using IDXGISwapChain1Present1Fn     = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
 
 #define TRY_HOOK_FUNCTION(NAME) do { if (!HookFunc(std::make_pair<void**, void*>(&(void*&)_##NAME, (void*)&DX10Hook_t::_My##NAME))) { \
     INGAMEOVERLAY_ERROR("Failed to hook {}", #NAME);\
@@ -460,7 +481,7 @@ cleanup:
 ULONG STDMETHODCALLTYPE DX10Hook_t::_MyID3D10DeviceRelease(ID3D10Device* _this)
 {
     auto inst = DX10Hook_t::Inst();
-    auto result = (_this->*inst->_ID3D10DeviceRelease)();
+    auto result = ReadAsFunctionPointer<ID3D10DeviceReleaseFn>(&inst->_ID3D10DeviceRelease)(_this);
 
     if (_this == inst->_Device)
     {
@@ -478,7 +499,7 @@ HRESULT STDMETHODCALLTYPE DX10Hook_t::_MyIDXGISwapChainPresent(IDXGISwapChain *_
     INGAMEOVERLAY_INFO("IDXGISwapChain::Present");
     auto inst = DX10Hook_t::Inst();
     inst->_PrepareForOverlay(_this, Flags);
-    return (_this->*inst->_IDXGISwapChainPresent)(SyncInterval, Flags);
+    return ReadAsFunctionPointer<IDXGISwapChainPresentFn>(&inst->_IDXGISwapChainPresent)(_this, SyncInterval, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE DX10Hook_t::_MyIDXGISwapChainResizeBuffers(IDXGISwapChain* _this, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
@@ -492,7 +513,7 @@ HRESULT STDMETHODCALLTYPE DX10Hook_t::_MyIDXGISwapChainResizeBuffers(IDXGISwapCh
         createRenderTargets = true;
         inst->_ResetRenderState(OverlayHookState::Reset);
     }
-    auto r = (_this->*inst->_IDXGISwapChainResizeBuffers)(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    auto r = ReadAsFunctionPointer<IDXGISwapChainResizeBuffersFn>(&inst->_IDXGISwapChainResizeBuffers)(_this, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     if (createRenderTargets)
     {
         inst->_ResetRenderState(inst->_CreateRenderTargets(_this)
@@ -514,7 +535,7 @@ HRESULT STDMETHODCALLTYPE DX10Hook_t::_MyIDXGISwapChainResizeTarget(IDXGISwapCha
         createRenderTargets = true;
         inst->_ResetRenderState(OverlayHookState::Reset);
     }
-    auto r = (_this->*inst->_IDXGISwapChainResizeTarget)(pNewTargetParameters);
+    auto r = ReadAsFunctionPointer<IDXGISwapChainResizeTargetFn>(&inst->_IDXGISwapChainResizeTarget)(_this, pNewTargetParameters);
     if (createRenderTargets)
     {
         inst->_ResetRenderState(inst->_CreateRenderTargets(_this)
@@ -530,7 +551,7 @@ HRESULT STDMETHODCALLTYPE DX10Hook_t::_MyIDXGISwapChain1Present1(IDXGISwapChain1
     INGAMEOVERLAY_INFO("IDXGISwapChain1::Present1");
     auto inst = DX10Hook_t::Inst();
     inst->_PrepareForOverlay(_this, Flags);
-    return (_this->*inst->_IDXGISwapChain1Present1)(SyncInterval, Flags, pPresentParameters);
+    return ReadAsFunctionPointer<IDXGISwapChain1Present1Fn>(&inst->_IDXGISwapChain1Present1)(_this, SyncInterval, Flags, pPresentParameters);
 }
 
 DX10Hook_t::DX10Hook_t():

@@ -19,6 +19,8 @@
 
 #include "WindowsHook.h"
 
+#include <cstring>
+
 #include <imgui.h>
 #include <backends/imgui_impl_win32.h>
 #include <System/Library.h>
@@ -32,6 +34,25 @@ namespace InGameOverlay {
 constexpr decltype(WindowsHook_t::DLL_NAME) WindowsHook_t::DLL_NAME;
 
 WindowsHook_t* WindowsHook_t::_inst = nullptr;
+
+// The gamepad hook members store plain function addresses read from the
+// Windows.Gaming.Input vtable. Invoke them as plain functions: member-pointer
+// call semantics misinterpret the low bit of the address as a vtable index and
+// crash.
+template<typename Fn>
+static Fn ReadAsFunctionPointer(void const* memberPtr)
+{
+    static_assert(sizeof(Fn) == sizeof(void*), "expected a plain function pointer");
+    Fn fn;
+    std::memcpy(&fn, memberPtr, sizeof(fn));
+    return fn;
+}
+
+using IRawControllerGetCurrentReadingFn = HRESULT(STDMETHODCALLTYPE*)(
+    SimpleWindowsGamingInput::IRawGameController*, UINT32, boolean*, UINT32,
+    SimpleWindowsGamingInput::GameControllerSwitchPosition*, UINT32, DOUBLE*, UINT64*);
+using IGamepadGetCurrentReadingFn = HRESULT(STDMETHODCALLTYPE*)(
+    SimpleWindowsGamingInput::IGamepad*, SimpleWindowsGamingInput::GamepadReading*);
 
 static int ToggleKeyToNativeKey(InGameOverlay::ToggleKey k)
 {
@@ -699,7 +720,7 @@ HRESULT STDMETHODCALLTYPE WindowsHook_t::_MyRawControllerGetCurrentReading(Simpl
 {
     WindowsHook_t* inst = WindowsHook_t::Inst();
 
-    auto result = (_this->*inst->_RawControllerGetCurrentReading)(buttonArrayLength, buttonArray, switchArrayLength, switchArray, axisArrayLength, axisArray, timestamp);
+    auto result = ReadAsFunctionPointer<IRawControllerGetCurrentReadingFn>(&inst->_RawControllerGetCurrentReading)(_this, buttonArrayLength, buttonArray, switchArrayLength, switchArray, axisArrayLength, axisArray, timestamp);
 
     if (!inst->_Initialized || !inst->_ApplicationInputsHidden)
         return result;
@@ -723,7 +744,7 @@ HRESULT STDMETHODCALLTYPE WindowsHook_t::_MyGamepadGetCurrentReading(SimpleWindo
 {
     WindowsHook_t* inst = WindowsHook_t::Inst();
 
-    auto result = (_this->*inst->_GamepadGetCurrentReading)(value);
+    auto result = ReadAsFunctionPointer<IGamepadGetCurrentReadingFn>(&inst->_GamepadGetCurrentReading)(_this, value);
 
     if (!inst->_Initialized || !inst->_ApplicationInputsHidden)
         return result;
