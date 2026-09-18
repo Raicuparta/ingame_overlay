@@ -289,8 +289,25 @@ void DX10Hook_t::_PrepareForOverlay(IDXGISwapChain* pSwapChain, UINT flags)
 
         ImGui::Render();
 
-        _Device->OMSetRenderTargets(1, &_RenderTargetView, nullptr);
-        ImGui_ImplDX10_RenderDrawData(ImGui::GetDrawData());
+        ImDrawData* drawData = ImGui::GetDrawData();
+
+        // ImGui's DX10 backend restores pipeline state but not the render
+        // targets. Engines cache OM state, so leaving our backbuffer RTV + null
+        // depth bound breaks their later passes. Save and restore it around the
+        // draw, and stay completely inert when there is nothing to draw.
+        if (drawData != nullptr && drawData->CmdLists.Size > 0)
+        {
+            ID3D10RenderTargetView* savedRtvs[D3D10_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+            ID3D10DepthStencilView* savedDsv = nullptr;
+            _Device->OMGetRenderTargets(D3D10_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRtvs, &savedDsv);
+
+            _Device->OMSetRenderTargets(1, &_RenderTargetView, nullptr);
+            ImGui_ImplDX10_RenderDrawData(drawData);
+
+            _Device->OMSetRenderTargets(D3D10_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRtvs, savedDsv);
+            for (auto* rtv : savedRtvs) { if (rtv) rtv->Release(); }
+            if (savedDsv) savedDsv->Release();
+        }
 
         if (screenshotType == ScreenshotType_t::AfterOverlay)
             _HandleScreenshot(pSwapChain);
